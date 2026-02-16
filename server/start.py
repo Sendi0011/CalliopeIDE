@@ -16,7 +16,7 @@ load_dotenv()
 from server.middleware.database import db, init_db
 from server.models import User, RefreshToken
 from server.routes import auth_bp
-from server.utils import token_required
+from server.utils import token_required, secure_execute, SecurityError
 
 
 
@@ -60,6 +60,14 @@ if LIMITER_AVAILABLE and os.getenv('RATE_LIMIT_ENABLED', 'true').lower() == 'tru
         key_func=get_remote_address,
         default_limits=[f"{os.getenv('RATE_LIMIT_PER_MINUTE', '60')}/minute"]
     )
+    
+    # Special rate limiting for code execution endpoint
+    @limiter.limit("10/minute")  # Stricter limit for code execution
+    @app.route('/execute', methods=['POST'])
+    @token_required
+    def execute_code_limited(current_user):
+        """Rate-limited code execution endpoint"""
+        return execute_code_internal(current_user)
 
 count = 0
 lock = threading.Lock()
@@ -165,6 +173,7 @@ def api_info():
             'protected': {
                 'create_session': 'GET / (requires auth)',
                 'list_sessions': 'GET /sessions (requires auth)',
+                'execute_code': 'POST /execute (requires auth)',
                 'current_user': 'GET /api/auth/me (requires auth)',
                 'update_profile': 'PUT /api/auth/me (requires auth)',
                 'change_password': 'POST /api/auth/change-password (requires auth)',
@@ -172,6 +181,142 @@ def api_info():
             }
         }
     }), 200
+
+
+def execute_code_internal(current_user):
+    """
+    Internal function to execute user-submitted Python code in a secure sandbox
+    
+    Expected JSON payload:
+    {
+        "code": "print('Hello World')",
+        "timeout": 5  # optional, defaults to 5 seconds
+    }
+    
+    Returns:
+    {
+        "success": bool,
+        "status": "success|error|timeout|memory_error",
+        "output": str,
+        "error": str,
+        "execution_time": float,
+        "user_id": int
+    }
+    """
+    try:
+        # Validate request data
+        if not request.is_json:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'output': '',
+                'error': 'Content-Type must be application/json',
+                'execution_time': 0,
+                'user_id': current_user.id
+            }), 400
+        
+        data = request.get_json()
+        
+        if not data:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'output': '',
+                'error': 'No JSON data provided',
+                'execution_time': 0,
+                'user_id': current_user.id
+            }), 400
+        
+        # Extract code from request
+        code = data.get('code')
+        if not code:
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'output': '',
+                'error': 'No code provided in request',
+                'execution_time': 0,
+                'user_id': current_user.id
+            }), 400
+        
+        if not isinstance(code, str):
+            return jsonify({
+                'success': False,
+                'status': 'error',
+                'output': '',
+                'error': 'Code must be a string',
+                'execution_time': 0,
+                'user_id': current_user.id
+            }), 400
+        
+        # Extract optional timeout parameter
+        timeout = data.get('timeout', 5)
+        try:
+            timeout = int(timeout)
+            if timeout < 1 or timeout > 30:  # Limit timeout to reasonable range
+                timeout = 5
+        except (ValueError, TypeError):
+            timeout = 5
+        
+        # Log the execution attempt
+        app.logger.info(f"User {current_user.username} (ID: {current_user.id}) executing code")
+        
+        # Execute the code securely
+        result = secure_execute(code, timeout=timeout)
+        
+        # Prepare response
+        success = result['status'] == 'success'
+        response_data = {
+            'success': success,
+            'status': result['status'],
+            'output': result['output'],
+            'error': result['error'],
+            'execution_time': result['execution_time'],
+            'user_id': current_user.id
+        }
+        
+        # Set appropriate HTTP status code
+        if success:
+            status_code = 200
+        elif result['status'] == 'timeout':
+            status_code = 408  # Request Timeout
+        elif result['status'] == 'memory_error':
+            status_code = 413  # Payload Too Large
+        else:
+            status_code = 400  # Bad Request
+        
+        return jsonify(response_data), status_code
+    
+    except SecurityError as e:
+        app.logger.warning(f"Security violation by user {current_user.username}: {str(e)}")
+        return jsonify({
+            'success': False,
+            'status': 'error',
+            'output': '',
+            'error': f'Restricted operation detected: {str(e)}',
+            'execution_time': 0,
+            'user_id': current_user.id
+        }), 403  # Forbidden
+    
+    except Exception as e:
+        app.logger.error(f"Unexpected error in execute_code: {str(e)}")
+        return jsonify({
+            'success': False,
+            'status': 'error',
+            'output': '',
+            'error': 'Internal server error occurred',
+            'execution_time': 0,
+            'user_id': current_user.id if current_user else None
+        }), 500
+
+
+@app.route('/execute', methods=['POST'])
+@token_required
+def execute_code(current_user):
+    """
+    Execute user-submitted Python code in a secure sandbox (PROTECTED)
+    """
+    return execute_code_internal(current_user)
 
 
 @app.errorhandler(404)
