@@ -223,8 +223,14 @@ original_import = __import__
 
 def restricted_import(name, *args, **kwargs):
     dangerous_modules = {repr(DANGEROUS_IMPORTS)}
-    if name in dangerous_modules:
-        raise ImportError(f"Import of '{{name}}' is not allowed for security reasons")
+    # Block both the exact module and any of its submodules, e.g. "os.path"
+    try:
+        module_name = str(name)
+    except Exception:
+        module_name = name
+    root_name = module_name.split('.', 1)[0]
+    if root_name in dangerous_modules:
+        raise ImportError(f"Import of '{{module_name}}' is not allowed for security reasons")
     return original_import(name, *args, **kwargs)
 
 # Override the import function
