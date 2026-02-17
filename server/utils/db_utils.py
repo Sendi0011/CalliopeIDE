@@ -188,10 +188,15 @@ def get_database_stats():
 
 
 def safe_commit():
-    """Safely commit database changes with rollback on error"""
+    """Safely commit database changes with rollback on error.
+
+    Returns:
+        Tuple[bool, Optional[str]]: (success, error_message). On success, returns (True, None).
+        On failure, performs a rollback and returns (False, error_message).
+    """
     try:
         db.session.commit()
-        return True
+        return True, None
     except Exception as e:
         db.session.rollback()
         return False, str(e)
