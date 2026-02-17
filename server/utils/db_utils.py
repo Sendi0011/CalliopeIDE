@@ -5,13 +5,29 @@ Provides helper functions for common database operations
 
 import os
 from datetime import datetime
+from flask import has_app_context
 from server.middleware.database import db
 from server.models import User, Session, ChatHistory, ProjectMetadata
 
 
 def ensure_database_directory():
-    """Ensure database directory exists"""
-    db_path = db.engine.url.database
+    """Ensure database directory exists.
+
+    This function is safe to call before the Flask app and database are
+    fully initialized; in that case it will perform no action.
+    """
+    db_path = None
+
+    # Only attempt to access the SQLAlchemy engine when an app context is active.
+    if has_app_context():
+        try:
+            # Prefer get_engine if available; fall back to direct engine access.
+            engine = getattr(db, "get_engine", None)
+            engine = engine() if callable(engine) else db.engine
+            db_path = engine.url.database
+        except Exception:
+            # If the engine is not available or misconfigured, silently skip.
+            db_path = None
     if db_path and not db_path.startswith(':memory:'):
         db_dir = os.path.dirname(os.path.abspath(db_path))
         os.makedirs(db_dir, exist_ok=True)
