@@ -38,29 +38,51 @@ def add_cors_headers(response):
     return response
 
 
-output = []
-user_input = ""
-stop_stream = False
-input_requested = False
+# Thread-safe global state management
+_output_lock = threading.Lock()
+_stop_event = threading.Event()
+_input_event = threading.Event()
+
+output: list[str] = []
+user_input: str = ""
+
+
+def _append_output(x: str) -> None:
+    """Thread-safe append to output list"""
+    with _output_lock:
+        output.append(x)
+
+
+def _clear_output() -> None:
+    """Thread-safe clear of output list"""
+    with _output_lock:
+        output.clear()
+
+
+def _snapshot_output(since: int) -> list[str]:
+    """Thread-safe snapshot of output list from index"""
+    with _output_lock:
+        return output[since:]
 
 
 def input(x):
-    global stop_stream, user_input, input_requested
+    global user_input
     user_input = ""
-    input_requested = True
-    stop_stream = True
+    _input_event.set()
+    _stop_event.set()
+
     while True:
         time.sleep(0.25)
         if user_input != "":
             input_value = user_input
             user_input = ""
-            input_requested = False
-            stop_stream = False
+            _input_event.clear()
+            _stop_event.clear()
             return input_value
 
 
 def print(x):
-    output.append(x)
+    _append_output(x)
 
 
 @app.route("/", methods=["GET"])
@@ -77,25 +99,25 @@ def send_query():
 
     data = sanitize_agent_input(data)
 
-    global output, user_input, stop_stream, input_requested
-    input_requested = False
-    stop_stream = False
-    output.clear()
+    global user_input
+    _input_event.clear()
+    _stop_event.clear()
+    _clear_output()
     user_input = data
 
     def generate():
-        global stop_stream, input_requested
         last_length = 0
         while True:
-            if len(output) > last_length:
-                for x in output[last_length:]:
+            new_output = _snapshot_output(last_length)
+            if new_output:
+                for x in new_output:
                     yield f"data: {json.dumps({'type': 'output', 'data': x})}\n\n".encode()
-                last_length = len(output)
+                last_length += len(new_output)
 
-            if input_requested:
+            if _input_event.is_set():
                 yield f"data: {json.dumps({'type': 'input_required'})}\n\n".encode()
                 break
-            if stop_stream and not input_requested:
+            if _stop_event.is_set() and not _input_event.is_set():
                 break
 
             time.sleep(0.25)
@@ -110,25 +132,29 @@ def send_query():
     return response
 
 
+COMMAND_TIMEOUT_SECONDS = 300
+
+
 def execute_command(cmd: str) -> str:
     if is_dangerous_command(cmd):
         blocked_msg = f"BLOCKED: Command '{cmd}' matches a disallowed pattern and was not executed."
         print(blocked_msg)
         return blocked_msg
 
-    print(f"Agent is executing command ```{cmd.replace('`', \"'\")}```")
+    sanitized_cmd = cmd.replace('`', "'")
+    print(f"Agent is executing command ```{sanitized_cmd}```")
 
     if len(cmd) > 1000:
         return "ERROR: Command too long (max 1000 characters)"
 
     try:
         result = subprocess.run(cmd, shell=True, text=True,
-                                capture_output=True, timeout=300)
+                                capture_output=True, timeout=COMMAND_TIMEOUT_SECONDS)
         if result.returncode != 0 and result.stderr:
             return f"ERROR: {result.stderr}\nOUTPUT: {result.stdout}"
         return result.stdout
     except subprocess.TimeoutExpired:
-        return "COMMAND TIMED OUT (30s limit)"
+        return f"COMMAND TIMED OUT ({COMMAND_TIMEOUT_SECONDS}s limit)"
     except Exception as e:
         return f"ERROR: {str(e)}"
 
@@ -403,8 +429,6 @@ Remember: You are a SELF-SUFFICIENT AUTONOMOUS AGENT. Explore, understand, and s
 
 
 def main():
-    global stop_stream
-
     model = genai.GenerativeModel(
         model_name="gemini-2.0-flash",
         generation_config={
@@ -483,7 +507,8 @@ REMEMBER: Keep your response VERY BRIEF to avoid truncation.
                                 cmd = cmd[1:-1]
 
                             cmd_output = execute_command(cmd)
-                            print(f"CLI Output: ```{cmd_output[:1000].replace('`', \"'\")}```")
+                            sanitized_output = cmd_output[:1000].replace('`', "'")
+                            print(f"CLI Output: ```{sanitized_output}```")
                             all_outputs.append(f"Command: {cmd}\nOutput: {cmd_output}")
 
                         full_output = "\n\n".join(all_outputs)
@@ -528,7 +553,7 @@ REMEMBER: Keep your response VERY BRIEF to avoid truncation.
                         "5. need_user_input=false\n\n" +
                         "Keep your response under 500 characters total."
                     )
-            stop_stream = True
+            _stop_event.set()
         except Exception as e:
             print(f"Error: {str(e)}")
             print("Error Occured but all is good")

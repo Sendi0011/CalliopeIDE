@@ -1,4 +1,5 @@
 import type { AppProps } from "next/app";
+import { useEffect } from "react";
 
 import { HeroUIProvider } from "@heroui/system";
 import { ThemeProvider as NextThemesProvider } from "next-themes";
@@ -6,16 +7,25 @@ import { useRouter } from "next/router";
 
 import { fontSans, fontMono } from "@/config/fonts";
 import "@/styles/globals.css";
+import { ErrorBoundary } from "@/components/ui/error-boundary";
+import { initSentry } from "@/lib/monitoring";
 
 export default function App({ Component, pageProps }: AppProps) {
   const router = useRouter();
 
+  // Initialize monitoring on mount
+  useEffect(() => {
+    initSentry();
+  }, []);
+
   return (
-    <HeroUIProvider navigate={router.push}>
-      <NextThemesProvider>
-        <Component {...pageProps} />
-      </NextThemesProvider>
-    </HeroUIProvider>
+    <ErrorBoundary>
+      <HeroUIProvider navigate={router.push}>
+        <NextThemesProvider>
+          <Component {...pageProps} />
+        </NextThemesProvider>
+      </HeroUIProvider>
+    </ErrorBoundary>
   );
 }
 

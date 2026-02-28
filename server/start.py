@@ -3,7 +3,7 @@ Calliope IDE - Authenticated Server
 Implements backend-driven authentication system with protected routes
 """
 import os
-import random
+import socket
 import shutil
 import subprocess
 import threading
@@ -20,8 +20,11 @@ from server.routes.chat_routes import chat_bp
 from server.routes.project_routes import project_bp
 from server.utils import token_required, secure_execute, SecurityError
 from server.utils.db_utils import create_session_for_user, add_chat_message, ensure_database_directory, get_database_stats
+from server.utils.monitoring import setup_logging, init_sentry, monitor_endpoint, get_monitoring_stats
 
-
+# Resolve agent.py path relative to this file
+_SERVER_DIR = os.path.abspath(os.path.dirname(__file__))
+_AGENT_PY = os.path.join(_SERVER_DIR, "agent.py")
 
 try:
     from flask_limiter import Limiter
@@ -40,7 +43,13 @@ threading.Thread(
 app = Flask(__name__)
 
 # Configuration
-app.config['SECRET_KEY'] = os.getenv('SECRET_KEY', 'dev-secret-key-change-in-production')
+_flask_secret = os.getenv('SECRET_KEY')
+if not _flask_secret:
+    raise EnvironmentError(
+        "SECRET_KEY environment variable is not set. "
+        "Generate a secure key with: python -c \"import secrets; print(secrets.token_hex(32))\""
+    )
+app.config['SECRET_KEY'] = _flask_secret
 BASE_DIR = os.path.abspath(os.path.dirname(__file__))
 DB_PATH = os.path.join(BASE_DIR, "..", "data", "calliope.db")
 
@@ -53,6 +62,10 @@ app.config['JSON_SORT_KEYS'] = False
 
 cors_origins = os.getenv('CORS_ORIGINS', 'http://localhost:3000,http://localhost:5173').split(',')
 CORS(app, resources={r"/*": {"origins": cors_origins}}, supports_credentials=True)
+
+# Initialize monitoring and error tracking
+app.logger = setup_logging("calliope-ide")
+init_sentry(app)
 
 # Initialize database and register blueprints
 init_db(app)
@@ -74,7 +87,14 @@ if LIMITER_AVAILABLE and os.getenv('RATE_LIMIT_ENABLED', 'true').lower() == 'tru
 count = 0
 lock = threading.Lock()
 
-os.system("rm -rf instance*/")
+
+def find_free_port() -> int:
+    """Ask the OS for a guaranteed-free port."""
+    with socket.socket(socket.AF_INET, socket.SOCK_STREAM) as s:
+        s.bind(('127.0.0.1', 0))
+        s.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+        return s.getsockname()[1]
+
 
 @app.route("/", methods=["GET"])
 @token_required
@@ -92,9 +112,9 @@ def create_session(current_user):
     # Create instance directory
     inst = f"instance{idx}_user{user_id}"
     os.makedirs(inst, exist_ok=True)
-    shutil.copy("agent.py", os.path.join(inst, "agent.py"))
+    shutil.copy(_AGENT_PY, os.path.join(inst, "agent.py"))
 
-    port = random.randint(1000, 65000)
+    port = find_free_port()
 
     # Start the agent process
     subprocess.Popen(
@@ -192,6 +212,22 @@ def health_check():
         'service': 'Calliope IDE',
         'authentication': 'enabled',
         'version': '1.0.0'
+    }), 200
+
+
+@app.route('/api/monitoring', methods=['GET'])
+@token_required
+def monitoring_status(current_user):
+    """Get monitoring and error tracking status (admin only)"""
+    if not current_user.is_admin:
+        return jsonify({
+            'success': False,
+            'error': 'Admin access required'
+        }), 403
+
+    return jsonify({
+        'success': True,
+        'monitoring': get_monitoring_stats()
     }), 200
 
 
@@ -413,12 +449,42 @@ def execute_code(current_user):
 
 @app.errorhandler(404)
 def not_found(error):
-    return jsonify({'success': False, 'error': 'Endpoint not found'}), 404
+    app.logger.warning(f"404 Not Found: {request.path}")
+    return jsonify({
+        'success': False,
+        'error': 'Endpoint not found',
+        'path': request.path
+    }), 404
 
 
 @app.errorhandler(500)
 def internal_error(error):
-    return jsonify({'success': False, 'error': 'Internal server error'}), 500
+    app.logger.error(f"500 Internal Error: {str(error)}", exc_info=True)
+    from server.utils.monitoring import track_error
+    track_error(error, {'endpoint': request.path, 'method': request.method})
+    return jsonify({
+        'success': False,
+        'error': 'Internal server error',
+        'message': 'An unexpected error occurred. The issue has been logged.'
+    }), 500
+
+
+@app.errorhandler(Exception)
+def handle_exception(error):
+    """Global exception handler for uncaught errors"""
+    app.logger.error(f"Unhandled exception: {str(error)}", exc_info=True)
+    from server.utils.monitoring import track_error
+    track_error(error, {
+        'endpoint': request.path if request else 'Unknown',
+        'method': request.method if request else 'Unknown'
+    })
+
+    # Return JSON response for all errors
+    return jsonify({
+        'success': False,
+        'error': 'An unexpected error occurred',
+        'message': str(error) if app.debug else 'The error has been logged and will be investigated.'
+    }), 500
 
 
 if __name__ == "__main__":
