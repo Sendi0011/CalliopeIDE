@@ -2,6 +2,46 @@
 @tailwind components;
 @tailwind utilities;
 
+/* Mobile-first responsive improvements */
+@layer base {
+  html {
+    /* Prevent horizontal scrolling on mobile */
+    overflow-x: hidden;
+  }
+  
+  body {
+    /* Improve touch scrolling on iOS */
+    -webkit-overflow-scrolling: touch;
+    /* Prevent zoom on input focus on mobile */
+    -webkit-text-size-adjust: 100%;
+  }
+  
+  /* Ensure minimum touch target size for accessibility */
+  button, [role="button"], input[type="submit"], input[type="button"] {
+    min-height: 44px;
+    min-width: 44px;
+  }
+  
+  /* Better mobile input handling */
+  input, textarea, select {
+    /* Prevent zoom on input focus on mobile Safari */
+    font-size: 16px;
+  }
+  
+  @media (max-width: 767px) {
+    /* Reduce font sizes slightly on mobile for better content fit */
+    h1 { font-size: clamp(1.875rem, 8vw, 3rem); }
+    h2 { font-size: clamp(1.5rem, 6vw, 2.25rem); }
+    h3 { font-size: clamp(1.25rem, 5vw, 1.875rem); }
+    
+    /* Ensure proper spacing on mobile */
+    .container {
+      padding-left: 1rem;
+      padding-right: 1rem;
+    }
+  }
+}
+
 textarea {
     all: unset;
     width: 100%;
@@ -12,6 +52,8 @@ textarea {
     line-height: inherit;
     resize: none;
     overflow: auto;
+    /* Ensure minimum font size for mobile */
+    font-size: max(16px, 1em);
 }  
 
 .markdown-body * {

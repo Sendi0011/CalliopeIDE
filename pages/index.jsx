@@ -40,17 +40,17 @@ export default function Home() {
                     scrolled ? "bg-[#0D1117]/80 backdrop-blur-md border-b border-white/10" : "bg-transparent",
                 )}
             >
-                <div className="mx-auto w-full flex h-20 items-center justify-between px-4 sm:px-6 lg:px-8">
+                <div className="mx-auto w-full flex h-16 sm:h-20 items-center justify-between px-4 sm:px-6 lg:px-8">
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ duration: 0.5 }}
                         className="flex items-center gap-2 font-medium"
                     >
-                        <img src="logo.svg" alt="Calliope" className="h-[45px]" />
+                        <img src="logo.svg" alt="Calliope" className="h-8 sm:h-[45px]" />
                     </motion.div>
 
-                    <nav className="hidden md:flex gap-10">
+                    <nav className="hidden md:flex gap-6 lg:gap-10">
                         {[
                             { name: "Features", href: "#features" },
                             { name: "Documentation", href: "#docs" },
@@ -74,15 +74,16 @@ export default function Home() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ duration: 0.5, delay: 0.4 }}
-                        className="flex items-center gap-4"
+                        className="flex items-center gap-2 sm:gap-4"
                     >
                         <Link href="https://github.com/aludyalu/chatterji" target="_blank" className="text-white/70 hover:text-[#9FEF00] transition-colors">
-                            <Github className="size-5" />
+                            <Github className="size-4 sm:size-5" />
                             <span className="sr-only">GitHub</span>
                         </Link>
                         <Link href="/app">
-                            <Button className="h-10 px-4 bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80 transition-colors">
-                                Get Started
+                            <Button className="h-8 sm:h-10 px-3 sm:px-4 text-sm bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80 transition-colors">
+                                <span className="hidden sm:inline">Get Started</span>
+                                <span className="sm:hidden">Start</span>
                             </Button>
                         </Link>
                     </motion.div>
@@ -90,14 +91,14 @@ export default function Home() {
             </header>
 
             <main className="flex-1">
-                <section className="relative pt-32 pb-20 md:pt-40 md:pb-32" ref={heroRef}>
-                    <div className="mx-auto px-8 w-full relative z-10">
-                        <div className="max-w-4xl mx-auto text-center space-y-8">
+                <section className="relative pt-20 pb-12 sm:pt-32 sm:pb-20 md:pt-40 md:pb-32" ref={heroRef}>
+                    <div className="mx-auto px-4 sm:px-6 lg:px-8 w-full relative z-10">
+                        <div className="max-w-4xl mx-auto text-center space-y-6 sm:space-y-8">
                             <motion.div
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
                                 transition={{ duration: 0.5 }}
-                                className="inline-flex items-center px-3 py-1 rounded-full bg-white/5 border border-white/10 text-white/90 text-sm mb-4"
+                                className="inline-flex items-center px-3 py-1 rounded-full bg-white/5 border border-white/10 text-white/90 text-xs sm:text-sm mb-4"
                             >
                                 <Terminal className="mr-2 h-4 w-4" /> Introducing Calliope IDE
                             </motion.div>
@@ -190,7 +191,7 @@ export default function Home() {
                             </motion.p>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-16 mt-16 px-10">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 md:gap-12 lg:gap-16 mt-12 sm:mt-16 px-4 sm:px-6 lg:px-10">
                             <FeatureCard
                                 title="Intelligent Code Editor"
                                 description="Advanced code intelligence with syntax highlighting, auto-completion, and real-time error checking specifically designed for Soroban development."
@@ -456,14 +457,14 @@ export default function Home() {
                         <div className="absolute bottom-0 left-0 right-0 h-px bg-gradient-to-r from-transparent via-white/20 to-transparent"></div>
                     </div>
 
-                    <div className="mx-auto px-8 w-full relative z-10">
+                    <div className="mx-auto px-4 sm:px-6 lg:px-8 w-full relative z-10">
                         <div className="max-w-3xl mx-auto text-center">
                             <motion.h2
                                 initial={{ opacity: 0, y: 20 }}
                                 whileInView={{ opacity: 1, y: 0 }}
                                 viewport={{ once: true }}
                                 transition={{ duration: 0.5 }}
-                                className="text-4xl md:text-6xl font-bold mb-6"
+                                className="text-3xl sm:text-4xl md:text-6xl font-bold mb-6"
                             >
                                 Ready to build the future?
                             </motion.h2>
@@ -472,7 +473,7 @@ export default function Home() {
                                 whileInView={{ opacity: 1, y: 0 }}
                                 viewport={{ once: true }}
                                 transition={{ duration: 0.5, delay: 0.1 }}
-                                className="text-white/70 text-xl mb-10 max-w-xl mx-auto"
+                                className="text-white/70 text-lg sm:text-xl mb-8 sm:mb-10 max-w-xl mx-auto"
                             >
                                 Join thousands of developers building innovative smart contracts with Calliope IDE.
                             </motion.p>
@@ -482,17 +483,17 @@ export default function Home() {
                                 whileInView={{ opacity: 1, y: 0 }}
                                 viewport={{ once: true }}
                                 transition={{ duration: 0.5, delay: 0.2 }}
-                                className="flex flex-wrap gap-4 justify-center"
+                                className="flex flex-col sm:flex-row gap-4 justify-center items-center"
                             >
                                 <Link href="/app">
-                                    <Button className="h-12 px-8 bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80">
+                                    <Button className="w-full sm:w-auto h-10 sm:h-12 px-6 sm:px-8 bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80">
                                         Get Started for Free
                                     </Button>
                                 </Link>
                                 <Link href="https://cal.com/atharv777" target="_blank">
                                     <Button
                                         variant="outline"
-                                        className="h-12 px-6 border-white/10 text-white hover:bg-white/10 hover:border-white/20 hover:text-white group"
+                                        className="w-full sm:w-auto h-10 sm:h-12 px-4 sm:px-6 border-white/10 text-white hover:bg-white/10 hover:border-white/20 hover:text-white group"
                                     >
                                         Schedule a Demo
                                         <ArrowRight className="ml-2 h-4 w-4 transition-transform group-hover:translate-x-1" />
