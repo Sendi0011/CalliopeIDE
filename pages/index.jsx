@@ -41,17 +41,17 @@ export default function Home() {
                     scrolled ? "bg-background/80 backdrop-blur-md border-b border-border/70" : "bg-transparent",
                 )}
             >
-                <div className="mx-auto w-full flex h-20 items-center justify-between px-4 sm:px-6 lg:px-8">
+                <div className="mx-auto w-full flex h-16 sm:h-20 items-center justify-between px-4 sm:px-6 lg:px-8">
                     <motion.div
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ duration: 0.5 }}
                         className="flex items-center gap-2 font-medium"
                     >
-                        <img src="logo.svg" alt="Calliope" className="h-[45px]" />
+                        <img src="logo.svg" alt="Calliope" className="h-8 sm:h-[45px]" />
                     </motion.div>
 
-                    <nav className="hidden md:flex gap-10">
+                    <nav className="hidden md:flex gap-6 lg:gap-10">
                         {[
                             { name: "Features", href: "#features" },
                             { name: "Documentation", href: "#docs" },
@@ -75,16 +75,17 @@ export default function Home() {
                         initial={{ opacity: 0 }}
                         animate={{ opacity: 1 }}
                         transition={{ duration: 0.5, delay: 0.4 }}
-                        className="flex items-center gap-4"
+                        className="flex items-center gap-2 sm:gap-4"
                     >
-                        <ThemeToggle />
                         <Link href="https://github.com/aludyalu/chatterji" target="_blank" className="text-foreground/70 hover:text-emerald-600 dark:hover:text-[#9FEF00] transition-colors">
                             <Github className="size-5" />
                             <span className="sr-only">GitHub</span>
                         </Link>
+                        <ThemeToggle />
                         <Link href="/app">
-                            <Button className="h-10 px-4 bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80 transition-colors">
-                                Get Started
+                            <Button className="h-8 sm:h-10 px-3 sm:px-4 text-sm bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80 transition-colors">
+                                <span className="hidden sm:inline">Get Started</span>
+                                <span className="sm:hidden">Start</span>
                             </Button>
                         </Link>
                     </motion.div>
@@ -92,9 +93,9 @@ export default function Home() {
             </header>
 
             <main className="flex-1">
-                <section className="relative pt-32 pb-20 md:pt-40 md:pb-32" ref={heroRef}>
-                    <div className="mx-auto px-8 w-full relative z-10">
-                        <div className="max-w-4xl mx-auto text-center space-y-8">
+                <section className="relative pt-20 pb-12 sm:pt-32 sm:pb-20 md:pt-40 md:pb-32" ref={heroRef}>
+                    <div className="mx-auto px-4 sm:px-6 lg:px-8 w-full relative z-10">
+                        <div className="max-w-4xl mx-auto text-center space-y-6 sm:space-y-8">
                             <motion.div
                                 initial={{ opacity: 0, y: 20 }}
                                 animate={{ opacity: 1, y: 0 }}
@@ -192,7 +193,7 @@ export default function Home() {
                             </motion.p>
                         </div>
 
-                        <div className="grid grid-cols-1 md:grid-cols-2 gap-16 mt-16 px-10">
+                        <div className="grid grid-cols-1 lg:grid-cols-2 gap-8 md:gap-12 lg:gap-16 mt-12 sm:mt-16 px-4 sm:px-6 lg:px-10">
                             <FeatureCard
                                 title="Intelligent Code Editor"
                                 description="Advanced code intelligence with syntax highlighting, auto-completion, and real-time error checking specifically designed for Soroban development."
@@ -315,10 +316,10 @@ export default function Home() {
                             </FeatureCard>
                         </div>
                     </div>
-                </section >
+                </section>
 
                 {/* Get Started Section */}
-                < section className="py-24 relative overflow-hidden" >
+                <section className="py-24 relative overflow-hidden">
                     <div className="absolute inset-0 bg-background opacity-50"></div>
 
                     <div className="mx-auto px-8 w-full relative z-10">
@@ -376,7 +377,7 @@ export default function Home() {
                             </motion.div>
                         </div>
                     </div>
-                </section >
+                </section>
 
                 <section className="py-24 relative">
                     <div className="mx-auto px-8 w-full">
@@ -458,14 +459,14 @@ export default function Home() {
                         <div className="absolute bottom-0 left-0 right-0 h-px theme-divider-gradient"></div>
                     </div>
 
-                    <div className="mx-auto px-8 w-full relative z-10">
+                    <div className="mx-auto px-4 sm:px-6 lg:px-8 w-full relative z-10">
                         <div className="max-w-3xl mx-auto text-center">
                             <motion.h2
                                 initial={{ opacity: 0, y: 20 }}
                                 whileInView={{ opacity: 1, y: 0 }}
                                 viewport={{ once: true }}
                                 transition={{ duration: 0.5 }}
-                                className="text-4xl md:text-6xl font-bold mb-6"
+                                className="text-3xl sm:text-4xl md:text-6xl font-bold mb-6"
                             >
                                 Ready to build the future?
                             </motion.h2>
@@ -484,10 +485,10 @@ export default function Home() {
                                 whileInView={{ opacity: 1, y: 0 }}
                                 viewport={{ once: true }}
                                 transition={{ duration: 0.5, delay: 0.2 }}
-                                className="flex flex-wrap gap-4 justify-center"
+                                className="flex flex-col sm:flex-row gap-4 justify-center items-center"
                             >
                                 <Link href="/app">
-                                    <Button className="h-12 px-8 bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80">
+                                    <Button className="w-full sm:w-auto h-10 sm:h-12 px-6 sm:px-8 bg-[#9FEF00] text-black hover:bg-[#9FEF00]/80">
                                         Get Started for Free
                                     </Button>
                                 </Link>
@@ -504,7 +505,7 @@ export default function Home() {
                         </div>
                     </div>
                 </section>
-            </main >
+            </main>
 
             <footer className="border-t border-border/70 py-16 relative">
                 <div className="mx-auto px-8 w-full">
@@ -570,6 +571,6 @@ export default function Home() {
                     </div>
                 </div>
             </footer>
-        </div >
+        </div>
     )
 }
