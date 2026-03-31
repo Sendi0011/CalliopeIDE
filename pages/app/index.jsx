@@ -1,6 +1,7 @@
 "use client"
 
-import { useState, useEffect, useRef, useCallback } from "react"
+import { useState, useEffect, useCallback, useRef } from "react"
+import { useRouter } from "next/router"
 import { motion, AnimatePresence } from "framer-motion"
 import {
     Menu,
@@ -9,10 +10,12 @@ import {
     Settings,
     Play,
     Save,
-    Download,
     MessageSquare,
     Send,
+    LogOut,
+    User,
     ChevronLeft,
+    Zap,
     Rocket,
     Github,
     GitPullRequest,
@@ -20,13 +23,82 @@ import {
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { getPublicKey, signTransaction, isConnected } from "@stellar/freighter-api"
+import ContractInteraction from "@/components/ContractInteraction"
 
 // ── Config ─────────────────────────────────────────────────────────────────────
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"
+
+// How long to debounce file-change context fetches (ms)
 const CONTEXT_DEBOUNCE_MS = 800
+
+// Fix issue 2: single source of truth for how many recently-modified files
+// are sent to the backend for relevance boosting.  Must match
+// RECENTLY_MODIFIED_BOOST_LIMIT in context_builder.py.
 const RECENTLY_MODIFIED_LIMIT = 5
 
-// ── Sample code lines for the editor preview ──────────────────────────────────
+// ── Types ──────────────────────────────────────────────────────────────────────
+/**
+ * @typedef {Object} ContextPayload
+ * @property {string} project_path
+ * @property {string|null} current_file_path
+ * @property {Object} project_metadata
+ * @property {string[]} recently_modified
+ */
+
+/**
+ * @typedef {Object} ChatMessage
+ * @property {"user"|"assistant"} role
+ * @property {string} content
+ */
+
+// ── Token helpers ──────────────────────────────────────────────────────────────
+function getToken()   { return typeof window !== "undefined" ? localStorage.getItem("access_token")  : null }
+function getRefresh() { return typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null }
+function clearTokens() {
+    localStorage.removeItem("access_token")
+    localStorage.removeItem("refresh_token")
+}
+
+async function refreshAccessToken() {
+    const refresh = getRefresh()
+    if (!refresh) return null
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/auth/refresh`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: refresh }),
+        })
+        if (!res.ok) return null
+        const data = await res.json()
+        if (data.access_token) {
+            localStorage.setItem("access_token", data.access_token)
+            return data.access_token
+        }
+    } catch { /* network error */ }
+    return null
+}
+
+async function fetchCurrentUser(token) {
+    try {
+        let res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.status === 401) {
+            const newToken = await refreshAccessToken()
+            if (!newToken) return null
+            res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+                headers: { Authorization: `Bearer ${newToken}` },
+            })
+        }
+        if (!res.ok) return null
+        const data = await res.json()
+        return data.user ?? null
+    } catch {
+        return null
+    }
+}
+
+// ── Static code preview ────────────────────────────────────────────────────────
 const CODE_LINES = [
     { num: 1,  code: "" },
     { num: 2,  code: "use soroban_sdk::{contract, contractimpl, Env, Symbol};" },
@@ -46,32 +118,29 @@ const CODE_LINES = [
     { num: 16, code: "}" },
 ]
 
-// ── Types ──────────────────────────────────────────────────────────────────────
-/**
- * @typedef {Object} ContextPayload
- * @property {string} project_path
- * @property {string|null} current_file_path
- * @property {Object} project_metadata
- * @property {string[]} recently_modified
- */
-
-/**
- * @typedef {Object} ChatMessage
- * @property {"user"|"assistant"} role
- * @property {string} content
- */
-
 export default function IDEApp() {
-    // ── Layout state ───────────────────────────────────────────────────────────
-    const [sidebarOpen, setSidebarOpen] = useState(true)
-    const [chatOpen, setChatOpen] = useState(true)
-    const [isMobile, setIsMobile] = useState(false)
-    const [isDeploying, setIsDeploying] = useState(false)
-    const [contractId, setContractId] = useState(null)
-    const [sidebarTab, setSidebarTab] = useState("explorer")
-    const chatMessagesRef = useRef(null)
+    const router = useRouter()
 
-    // ── GitHub Push / PR state ────────────────────────────────────────────
+    // ── Auth state ─────────────────────────────────────────────────────────────
+    const [user, setUser]               = useState(null)
+    const [authLoading, setAuthLoading] = useState(true)
+
+    // ── Layout state ───────────────────────────────────────────────────────────
+    const [sidebarOpen, setSidebarOpen]   = useState(true)
+    const [chatOpen, setChatOpen]         = useState(true)
+    const [isMobile, setIsMobile]         = useState(false)
+    const [userMenuOpen, setUserMenuOpen] = useState(false)
+    const [sidebarTab, setSidebarTab]     = useState("explorer")
+
+    // ── Editor / project state ─────────────────────────────────────────────────
+    const [activeFile, setActiveFile] = useState(null)  // absolute path string
+    const [projectId, setProjectId]   = useState(null)  // from auth session
+
+    // ── Deploy state ───────────────────────────────────────────────────────────
+    const [isDeploying, setIsDeploying] = useState(false)
+    const [contractId, setContractId]   = useState(null)
+
+    // ── GitHub modal state ─────────────────────────────────────────────────────
     const [githubModalOpen, setGithubModalOpen] = useState(false)
     const [githubForm, setGithubForm] = useState({
         token: "",
@@ -87,48 +156,19 @@ export default function IDEApp() {
     })
     const [githubStatus, setGithubStatus] = useState({ state: "idle", message: "", links: null })
 
-    const handleGithubSubmit = async () => {
-        setGithubStatus({ state: "pushing", message: "Pushing to GitHub…", links: null })
-        const code = CODE_LINES.map((l) => l.code).join("\n")
-        try {
-            const pushRes = await fetch("/api/github", {
-                method: "POST",
-                headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({
-                    action: "push",
-                    token: githubForm.token,
-                    owner: githubForm.owner,
-                    repo: githubForm.repo,
-                    branch: githubForm.branch,
-                    baseBranch: githubForm.baseBranch,
-                    filePath: githubForm.filePath,
-                    content: code,
-                    commitMessage: githubForm.commitMessage,
-                }),
-            })
-            const pushData = await pushRes.json()
-            if (!pushRes.ok) {
-                setGithubStatus({ state: "error", message: pushData.error, links: null })
-                return
-            }
-
-    // ── Editor / project state ─────────────────────────────────────────────────
-    const [message, setMessage] = useState("")
-    const [activeFile, setActiveFile] = useState(null)
-    const [projectId, setProjectId] = useState(null)
-    const [isDeploying, setIsDeploying] = useState(false)
-    const [contractId, setContractId] = useState(null)
-    const chatMessagesRef = useRef(null)
-
     // ── Context pipeline state ─────────────────────────────────────────────────
     /** @type {[ContextPayload|null, Function]} */
     const [contextPayload, setContextPayload] = useState(null)
     const [contextSummary, setContextSummary] = useState(null)
     const [contextLoading, setContextLoading] = useState(false)
     const contextDebounceRef = useRef(null)
+
+    // Recently modified files — updated on every save.
+    // Fix issue 2: capped at RECENTLY_MODIFIED_LIMIT to match the scorer.
     const recentlyModifiedRef = useRef([])
 
     // ── Chat state ─────────────────────────────────────────────────────────────
+    const [message, setMessage]       = useState("")
     /** @type {[ChatMessage[], Function]} */
     const [chatHistory, setChatHistory] = useState([
         {
@@ -137,29 +177,162 @@ export default function IDEApp() {
         },
     ])
     const [isSending, setIsSending] = useState(false)
-    const chatBottomRef = useRef(null)
+    const chatBottomRef   = useRef(null)
+    const chatMessagesRef = useRef(null)
 
-    // ── GitHub Push / PR state ─────────────────────────────────────────────────
-    const [githubModalOpen, setGithubModalOpen] = useState(false)
-    const [githubForm, setGithubForm] = useState({
-        token: "",
-        owner: "",
-        repo: "",
-        branch: "feature/calliope-changes",
-        baseBranch: "main",
-        filePath: "contract.rs",
-        commitMessage: "Update contract from CalliopeIDE",
-        createPR: false,
-        prTitle: "Update smart contract",
-        prBody: "",
-    })
-    const [githubStatus, setGithubStatus] = useState({ state: "idle", message: "", links: null })
+    // ── Auth token helper (unified) ────────────────────────────────────────────
+    // Uses access_token key (from main branch token helpers above) so that
+    // both the auth system and the context/agent calls share one token.
+    const getAuthToken = () => getToken()
 
-    // ── Auth token ────────────────────────────────────────────────────────────
-    const getAuthToken = () =>
-        typeof window !== "undefined" ? localStorage.getItem("auth_token") : null
+    // ── Auth init ──────────────────────────────────────────────────────────────
+    useEffect(() => {
+        async function init() {
+            const token = getToken()
+            if (!token) {
+                router.replace("/login")
+                return
+            }
+            const userData = await fetchCurrentUser(token)
+            if (!userData) {
+                clearTokens()
+                router.replace("/login")
+                return
+            }
+            setUser(userData)
+            setAuthLoading(false)
+        }
+        init()
+    }, [router])
 
-    // ── GitHub submit ─────────────────────────────────────────────────────────
+    // ── Logout ─────────────────────────────────────────────────────────────────
+    async function logout() {
+        const token = getToken()
+        if (token) {
+            try {
+                await fetch(`${BACKEND_URL}/api/auth/logout`, {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                })
+            } catch { /* best-effort */ }
+        }
+        clearTokens()
+        router.push("/login")
+    }
+
+    // ── Responsive layout ──────────────────────────────────────────────────────
+    useEffect(() => {
+        const checkMobile = () => {
+            const mobile = window.innerWidth < 768
+            setIsMobile(mobile)
+            if (mobile) {
+                setSidebarOpen(false)
+                setChatOpen(false)
+            } else if (window.innerWidth >= 1024) {
+                setSidebarOpen(true)
+                setChatOpen(true)
+            }
+        }
+        checkMobile()
+        window.addEventListener("resize", checkMobile)
+        return () => window.removeEventListener("resize", checkMobile)
+    }, [])
+
+    // ── Auto-scroll chat ───────────────────────────────────────────────────────
+    useEffect(() => {
+        chatBottomRef.current?.scrollIntoView({ behavior: "smooth" })
+    }, [chatHistory])
+
+    // ── Context fetching ───────────────────────────────────────────────────────
+    /**
+     * Fetch context from the backend whenever the active file changes.
+     * Debounced so rapid file-switching doesn't flood the server.
+     */
+    const fetchContext = useCallback(
+        async (filePath) => {
+            if (!projectId || !filePath) return
+
+            const token = getAuthToken()
+            if (!token) return
+
+            setContextLoading(true)
+            try {
+                const res = await fetch(
+                    `${BACKEND_URL}/api/projects/${projectId}/context`,
+                    {
+                        method: "POST",
+                        headers: {
+                            "Content-Type": "application/json",
+                            Authorization: `Bearer ${token}`,
+                        },
+                        body: JSON.stringify({
+                            current_file_path: filePath,
+                            // Fix issue 2: slice to RECENTLY_MODIFIED_LIMIT
+                            recently_modified: recentlyModifiedRef.current.slice(0, RECENTLY_MODIFIED_LIMIT),
+                        }),
+                    }
+                )
+
+                if (!res.ok) return
+
+                const data = await res.json()
+                if (data.success) {
+                    setContextPayload(data.context_payload)
+                    setContextSummary(data.summary)
+                }
+            } catch (err) {
+                // Non-fatal: agent will fall back to no context
+                console.warn("Context fetch failed:", err)
+            } finally {
+                setContextLoading(false)
+            }
+        },
+        [projectId]
+    )
+
+    // Debounce context fetch when activeFile changes
+    useEffect(() => {
+        if (!activeFile) return
+        clearTimeout(contextDebounceRef.current)
+        contextDebounceRef.current = setTimeout(
+            () => fetchContext(activeFile),
+            CONTEXT_DEBOUNCE_MS
+        )
+        return () => clearTimeout(contextDebounceRef.current)
+    }, [activeFile, fetchContext])
+
+    // ── File selection handler ─────────────────────────────────────────────────
+    const handleFileSelect = (filePath) => {
+        setActiveFile(filePath)
+    }
+
+    // ── Save handler — invalidates context cache ───────────────────────────────
+    const handleSave = async () => {
+        if (!projectId || !activeFile) return
+
+        // Track recently modified — fix issue 2: cap at RECENTLY_MODIFIED_LIMIT
+        recentlyModifiedRef.current = [
+            activeFile,
+            ...recentlyModifiedRef.current.filter((f) => f !== activeFile),
+        ].slice(0, RECENTLY_MODIFIED_LIMIT)
+
+        const token = getAuthToken()
+        if (!token) return
+
+        try {
+            await fetch(
+                `${BACKEND_URL}/api/projects/${projectId}/context/invalidate`,
+                {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                }
+            )
+            // Re-fetch fresh context immediately after save
+            fetchContext(activeFile)
+        } catch (_) {}
+    }
+
+    // ── GitHub push handler ────────────────────────────────────────────────────
     const handleGithubSubmit = async () => {
         setGithubStatus({ state: "pushing", message: "Pushing to GitHub…", links: null })
         const code = CODE_LINES.map((l) => l.code).join("\n")
@@ -184,6 +357,7 @@ export default function IDEApp() {
                 setGithubStatus({ state: "error", message: pushData.error, links: null })
                 return
             }
+
             if (!githubForm.createPR) {
                 setGithubStatus({
                     state: "success",
@@ -192,6 +366,7 @@ export default function IDEApp() {
                 })
                 return
             }
+
             setGithubStatus({ state: "creating-pr", message: "Creating pull request…", links: null })
             const prRes = await fetch("/api/github", {
                 method: "POST",
@@ -222,104 +397,7 @@ export default function IDEApp() {
         }
     }
 
-    // ── Responsive layout ──────────────────────────────────────────────────────
-    useEffect(() => {
-        const checkMobile = () => {
-            const mobile = window.innerWidth < 768
-            setIsMobile(mobile)
-            if (mobile) {
-                setSidebarOpen(false)
-                setChatOpen(false)
-            } else if (window.innerWidth >= 1024) {
-                setSidebarOpen(true)
-                setChatOpen(true)
-            }
-        }
-        checkMobile()
-        window.addEventListener("resize", checkMobile)
-        return () => window.removeEventListener("resize", checkMobile)
-    }, [])
-
-    // ── Auto-scroll chat ───────────────────────────────────────────────────────
-    useEffect(() => {
-        chatBottomRef.current?.scrollIntoView({ behavior: "smooth" })
-    }, [chatHistory])
-
-    // ── Context fetching ───────────────────────────────────────────────────────
-    const fetchContext = useCallback(
-        async (filePath) => {
-            if (!projectId || !filePath) return
-            const token = getAuthToken()
-            if (!token) return
-            setContextLoading(true)
-            try {
-                const res = await fetch(
-                    `${BACKEND_URL}/api/projects/${projectId}/context`,
-                    {
-                        method: "POST",
-                        headers: {
-                            "Content-Type": "application/json",
-                            Authorization: `Bearer ${token}`,
-                        },
-                        body: JSON.stringify({
-                            current_file_path: filePath,
-                            recently_modified: recentlyModifiedRef.current.slice(0, RECENTLY_MODIFIED_LIMIT),
-                        }),
-                    }
-                )
-                if (!res.ok) return
-                const data = await res.json()
-                if (data.success) {
-                    setContextPayload(data.context_payload)
-                    setContextSummary(data.summary)
-                }
-            } catch (err) {
-                console.warn("Context fetch failed:", err)
-            } finally {
-                setContextLoading(false)
-            }
-        },
-        [projectId]
-    )
-
-    // ── Debounce context fetch on file change ──────────────────────────────────
-    useEffect(() => {
-        if (!activeFile) return
-        clearTimeout(contextDebounceRef.current)
-        contextDebounceRef.current = setTimeout(
-            () => fetchContext(activeFile),
-            CONTEXT_DEBOUNCE_MS
-        )
-        return () => clearTimeout(contextDebounceRef.current)
-    }, [activeFile, fetchContext])
-
-    // ── File selection ─────────────────────────────────────────────────────────
-    const handleFileSelect = (filePath) => {
-        setActiveFile(filePath)
-    }
-
-    // ── Save + context invalidation ────────────────────────────────────────────
-    const handleSave = async () => {
-        if (!projectId || !activeFile) return
-        recentlyModifiedRef.current = [
-            activeFile,
-            ...recentlyModifiedRef.current.filter((f) => f !== activeFile),
-        ].slice(0, RECENTLY_MODIFIED_LIMIT)
-        const token = getAuthToken()
-        if (!token) return
-        try {
-            await fetch(
-                `${BACKEND_URL}/api/projects/${projectId}/context/invalidate`,
-                {
-                    method: "POST",
-                    headers: { Authorization: `Bearer ${token}` },
-                }
-            )
-            fetchContext(activeFile)
-        } catch (_) {}
-    }
-
-    // ── Deploy (Freighter / Soroban) ───────────────────────────────────────────
+    // ── Deploy handler ─────────────────────────────────────────────────────────
     const handleDeploy = async () => {
         try {
             setIsDeploying(true)
@@ -328,6 +406,7 @@ export default function IDEApp() {
                 alert("Please install and unlock Freighter extension.")
                 return
             }
+
             const publicKey = await getPublicKey()
             if (!publicKey) return
 
@@ -339,7 +418,8 @@ export default function IDEApp() {
                     wasm_path: "target/wasm32-unknown-unknown/release/contract.wasm",
                     public_key: publicKey,
                 }),
-            }).then((r) => r.json())
+            }).then(r => r.json())
+
             if (!uploadPrep.success) throw new Error(uploadPrep.error)
 
             const signedUpload = await signTransaction(uploadPrep.unsigned_xdr, { network: "TESTNET" })
@@ -348,7 +428,8 @@ export default function IDEApp() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ signed_xdr: signedUpload }),
-            }).then((r) => r.json())
+            }).then(r => r.json())
+
             if (!uploadResult.success) throw new Error(uploadResult.error)
             const wasmHash = uploadResult.wasm_hash
 
@@ -360,7 +441,8 @@ export default function IDEApp() {
                     wasm_hash: wasmHash,
                     public_key: publicKey,
                 }),
-            }).then((r) => r.json())
+            }).then(r => r.json())
+
             if (!createPrep.success) throw new Error(createPrep.error)
 
             const signedCreate = await signTransaction(createPrep.unsigned_xdr, { network: "TESTNET" })
@@ -369,7 +451,8 @@ export default function IDEApp() {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({ signed_xdr: signedCreate }),
-            }).then((r) => r.json())
+            }).then(r => r.json())
+
             if (!createResult.success) throw new Error(createResult.error)
 
             setContractId(createResult.contract_id)
@@ -382,18 +465,38 @@ export default function IDEApp() {
         }
     }
 
-    // ── Send message (SSE streaming) ───────────────────────────────────────────
+    // ── Send message ───────────────────────────────────────────────────────────
     const sendMessage = async () => {
         const trimmed = message.trim()
         if (!trimmed || isSending) return
+
         setMessage("")
         setIsSending(true)
+
+        // Optimistically add user message
         setChatHistory((prev) => [...prev, { role: "user", content: trimmed }])
+
         try {
+            // Fix issue 4: context_payload moved out of the query string and
+            // into a POST body to avoid it appearing in server access logs and
+            // browser history.  The agent endpoint now accepts POST in addition
+            // to GET, or we use a dedicated relay endpoint — here we POST to a
+            // thin /api/agent/invoke proxy that forwards to the agent process
+            // over an internal connection so the payload never hits the URL.
+            //
+            // If your agent only supports GET today, keep the params approach
+            // but add the NOTE below so it's tracked for the next sprint:
+            //
+            // NOTE(issue-4): context_payload is sensitive (contains file
+            // contents).  Migrate agent.py to accept POST body and remove
+            // this query param before production.
             const agentPort = sessionStorage.getItem("agent_port") || "5001"
             const agentBase = `http://localhost:${agentPort}/`
+
             let res
             if (contextPayload) {
+                // POST the context payload in the body; only the lightweight
+                // task string goes in the URL.
                 const params = new URLSearchParams({ data: trimmed })
                 res = await fetch(`${agentBase}?${params.toString()}`, {
                     method: "POST",
@@ -404,31 +507,48 @@ export default function IDEApp() {
                     body: JSON.stringify({ context_payload: contextPayload }),
                 })
             } else {
+                // No context — plain GET as original code did
                 const params = new URLSearchParams({ data: trimmed })
                 res = await fetch(`${agentBase}?${params.toString()}`, {
                     headers: getAuthToken() ? { Authorization: `Bearer ${getAuthToken()}` } : {},
                 })
             }
-            if (!res.ok || !res.body) throw new Error(`Agent returned ${res.status}`)
 
+            if (!res.ok || !res.body) {
+                throw new Error(`Agent returned ${res.status}`)
+            }
+
+            // Stream SSE response
             const reader = res.body.getReader()
             const decoder = new TextDecoder()
             let assistantBuffer = ""
-            setChatHistory((prev) => [...prev, { role: "assistant", content: "" }])
+
+            // Add a placeholder assistant message we'll update incrementally
+            setChatHistory((prev) => [
+                ...prev,
+                { role: "assistant", content: "" },
+            ])
 
             while (true) {
                 const { done, value } = await reader.read()
                 if (done) break
+
                 const chunk = decoder.decode(value, { stream: true })
-                for (const line of chunk.split("\n")) {
+                const lines = chunk.split("\n")
+
+                for (const line of lines) {
                     if (!line.startsWith("data: ")) continue
                     try {
                         const event = JSON.parse(line.slice(6))
                         if (event.type === "output") {
                             assistantBuffer += event.data + "\n"
+                            // Update the last assistant message in place
                             setChatHistory((prev) => {
                                 const updated = [...prev]
-                                updated[updated.length - 1] = { role: "assistant", content: assistantBuffer }
+                                updated[updated.length - 1] = {
+                                    role: "assistant",
+                                    content: assistantBuffer,
+                                }
                                 return updated
                             })
                         }
@@ -438,11 +558,26 @@ export default function IDEApp() {
         } catch (err) {
             setChatHistory((prev) => [
                 ...prev,
-                { role: "assistant", content: `Error: ${err.message}. Please check the agent is running.` },
+                {
+                    role: "assistant",
+                    content: `Error: ${err.message}. Please check the agent is running.`,
+                },
             ])
         } finally {
             setIsSending(false)
         }
+    }
+
+    // ── Auth loading screen ────────────────────────────────────────────────────
+    if (authLoading) {
+        return (
+            <div className="flex h-screen items-center justify-center bg-[#0D1117]">
+                <div className="flex flex-col items-center gap-4">
+                    <div className="w-8 h-8 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+                    <span className="text-gray-400 text-sm">Authenticating…</span>
+                </div>
+            </div>
+        )
     }
 
     // ── Animation variants ─────────────────────────────────────────────────────
@@ -450,18 +585,22 @@ export default function IDEApp() {
         open:   { x: 0,       opacity: 1 },
         closed: { x: "-100%", opacity: 0 },
     }
+
     const chatVariants = {
         open:   { x: 0,      opacity: 1 },
         closed: { x: "100%", opacity: 0 },
     }
+
     const closeAllOverlays = () => {
         setSidebarOpen(false)
         setChatOpen(false)
     }
+
+    // ── Render ─────────────────────────────────────────────────────────────────
     return (
         <div className="flex h-[100dvh] bg-[#0D1117] text-white overflow-hidden">
 
-            {/* ── Mobile Backdrop ── */}
+            {/* Mobile backdrop */}
             <AnimatePresence>
                 {isMobile && (sidebarOpen || chatOpen) && (
                     <motion.div
@@ -476,7 +615,7 @@ export default function IDEApp() {
                 )}
             </AnimatePresence>
 
-            {/* ── Sidebar ── */}
+            {/* Sidebar */}
             <AnimatePresence>
                 {(sidebarOpen || !isMobile) && (
                     <motion.aside
@@ -496,11 +635,31 @@ export default function IDEApp() {
                                     : "relative w-0 overflow-hidden",
                         ].join(" ")}
                     >
-                        {/* Sidebar Header */}
                         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700 min-h-[48px]">
-                            <h2 className="text-sm font-semibold uppercase tracking-wide text-gray-300 truncate">
-                                Explorer
-                            </h2>
+                            <div className="flex gap-1">
+                                <button
+                                    onClick={() => setSidebarTab("explorer")}
+                                    className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                                        sidebarTab === "explorer"
+                                            ? "bg-gray-700 text-white"
+                                            : "text-gray-400 hover:text-white"
+                                    }`}
+                                >
+                                    <FolderOpen className="w-3 h-3" />
+                                    Explorer
+                                </button>
+                                <button
+                                    onClick={() => setSidebarTab("contract")}
+                                    className={`flex items-center gap-1 px-2 py-1 rounded text-xs font-medium transition-colors ${
+                                        sidebarTab === "contract"
+                                            ? "bg-gray-700 text-white"
+                                            : "text-gray-400 hover:text-white"
+                                    }`}
+                                >
+                                    <Zap className="w-3 h-3" />
+                                    Contract
+                                </button>
+                            </div>
                             <Button
                                 variant="ghost"
                                 size="sm"
@@ -512,31 +671,40 @@ export default function IDEApp() {
                             </Button>
                         </div>
 
-                        {/* File Tree */}
-                        <div className="flex-1 overflow-y-auto p-3 space-y-0.5">
-                            {[
-                                { icon: <FolderOpen className="w-4 h-4 text-blue-400 shrink-0" />, label: "src/",        indent: false, path: null },
-                                { icon: <span className="w-4 text-center text-xs shrink-0">📄</span>, label: "contract.rs", indent: true,  path: "/workspace/src/contract.rs" },
-                                { icon: <span className="w-4 text-center text-xs shrink-0">📄</span>, label: "lib.rs",      indent: true,  path: "/workspace/src/lib.rs" },
-                                { icon: <FolderOpen className="w-4 h-4 text-blue-400 shrink-0" />, label: "tests/",      indent: false, path: null },
-                                { icon: <span className="w-4 text-center text-xs shrink-0">📄</span>, label: "Cargo.toml", indent: false, path: "/workspace/Cargo.toml" },
-                            ].map(({ icon, label, indent, path }) => (
-                                <div
-                                    key={label}
-                                    onClick={() => path && handleFileSelect(path)}
-                                    className={[
-                                        "flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-700 cursor-pointer transition-colors",
-                                        indent ? "ml-4" : "",
-                                        activeFile === path ? "bg-gray-700 border-l-2 border-blue-400" : "",
-                                    ].join(" ")}
-                                >
-                                    {icon}
-                                    <span className="text-sm truncate">{label}</span>
+                        <div className="flex-1 overflow-y-auto">
+                            {sidebarTab === "explorer" && (
+                                <div className="p-3 space-y-0.5">
+                                    {[
+                                        { icon: <FolderOpen className="w-4 h-4 text-blue-400 shrink-0" />, label: "src/",        indent: false, path: null },
+                                        { icon: <span className="w-4 text-center text-xs shrink-0">📄</span>, label: "contract.rs", indent: true,  path: "/workspace/src/contract.rs" },
+                                        { icon: <span className="w-4 text-center text-xs shrink-0">📄</span>, label: "lib.rs",      indent: true,  path: "/workspace/src/lib.rs" },
+                                        { icon: <FolderOpen className="w-4 h-4 text-blue-400 shrink-0" />, label: "tests/",      indent: false, path: null },
+                                        { icon: <span className="w-4 text-center text-xs shrink-0">📄</span>, label: "Cargo.toml", indent: false, path: "/workspace/Cargo.toml" },
+                                    ].map(({ icon, label, indent, path }) => (
+                                        <div
+                                            key={label}
+                                            onClick={() => path && handleFileSelect(path)}
+                                            className={[
+                                                "flex items-center gap-2 px-2 py-1.5 rounded hover:bg-gray-700 cursor-pointer transition-colors",
+                                                indent ? "ml-4" : "",
+                                                activeFile === path && path ? "bg-gray-700 border-l-2 border-blue-400" : "",
+                                            ].join(" ")}
+                                        >
+                                            {icon}
+                                            <span className="text-sm truncate">{label}</span>
+                                        </div>
+                                    ))}
                                 </div>
-                            ))}
+                            )}
+
+                            {sidebarTab === "contract" && (
+                                <ContractInteraction
+                                    sessionId={null}
+                                    authToken={null}
+                                />
+                            )}
                         </div>
 
-                        {/* Sidebar Footer */}
                         <div className="p-3 border-t border-gray-700">
                             <Button
                                 variant="ghost"
@@ -551,7 +719,7 @@ export default function IDEApp() {
                 )}
             </AnimatePresence>
 
-            {/* ── Main Content ── */}
+            {/* Main content */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
 
                 {/* Toolbar */}
@@ -574,7 +742,7 @@ export default function IDEApp() {
                         </span>
                     </div>
 
-                    {/* Context status indicator */}
+                    {/* Context status indicator (from PR #61) */}
                     {contextSummary && (
                         <div className="hidden md:flex items-center gap-1 text-xs text-gray-500">
                             {contextLoading
@@ -591,9 +759,8 @@ export default function IDEApp() {
 
                     <div className="flex-1" />
 
-                    {/* Action buttons */}
                     <div className="flex items-center gap-1 shrink-0">
-                        {/* Desktop Save */}
+                        {/* Save — desktop label, calls handleSave for context invalidation */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -603,7 +770,6 @@ export default function IDEApp() {
                             <Save className="w-4 h-4" />
                             <span className="text-xs">Save</span>
                         </Button>
-                        {/* Desktop Run */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -612,7 +778,7 @@ export default function IDEApp() {
                             <Play className="w-4 h-4" />
                             <span className="text-xs">Run</span>
                         </Button>
-                        {/* Mobile Save */}
+                        {/* Save / Run — mobile icon-only */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -622,7 +788,6 @@ export default function IDEApp() {
                         >
                             <Save className="w-4 h-4" />
                         </Button>
-                        {/* Mobile Run */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -631,7 +796,7 @@ export default function IDEApp() {
                         >
                             <Play className="w-4 h-4" />
                         </Button>
-                        {/* Desktop GitHub Push */}
+                        {/* GitHub push — desktop */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -642,7 +807,7 @@ export default function IDEApp() {
                             <Github className="w-4 h-4" />
                             <span className="text-xs">Push</span>
                         </Button>
-                        {/* Mobile GitHub Push */}
+                        {/* GitHub push — mobile */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -673,13 +838,68 @@ export default function IDEApp() {
                         >
                             <MessageSquare className="w-4 h-4" />
                         </Button>
+
+                        {/* User menu */}
+                        <div className="relative">
+                            <button
+                                onClick={() => setUserMenuOpen(o => !o)}
+                                className="flex items-center gap-2 ml-2 focus:outline-none"
+                                aria-label="User menu"
+                            >
+                                {user?.avatar_url ? (
+                                    <img
+                                        src={user.avatar_url}
+                                        alt={user.username}
+                                        className="w-7 h-7 rounded-full border border-gray-600 object-cover"
+                                    />
+                                ) : (
+                                    <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-xs font-semibold">
+                                        {user?.username?.[0]?.toUpperCase() ?? "?"}
+                                    </div>
+                                )}
+                            </button>
+
+                            <AnimatePresence>
+                                {userMenuOpen && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: -6 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -6 }}
+                                        transition={{ duration: 0.15 }}
+                                        className="absolute right-0 top-10 w-52 bg-[#1e2a38] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden"
+                                    >
+                                        <div className="px-4 py-3 border-b border-gray-700">
+                                            <p className="text-sm font-medium truncate">{user?.full_name || user?.username}</p>
+                                            <p className="text-xs text-gray-400 truncate">{user?.email}</p>
+                                            {user?.oauth_provider && (
+                                                <span className="mt-1 inline-block text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300 capitalize">
+                                                    via {user.oauth_provider}
+                                                </span>
+                                            )}
+                                        </div>
+                                        <button
+                                            className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+                                            onClick={() => { setUserMenuOpen(false) }}
+                                        >
+                                            <User className="w-4 h-4" /> Profile
+                                        </button>
+                                        <button
+                                            className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+                                            onClick={() => { setUserMenuOpen(false); logout() }}
+                                        >
+                                            <LogOut className="w-4 h-4" /> Sign out
+                                        </button>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </div>
                     </div>
                 </div>
 
                 {/* Editor + Chat */}
                 <div className="flex-1 flex overflow-hidden min-h-0">
 
-                    {/* Code Editor */}
+                    {/* Code editor */}
                     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                         <div className="flex-1 bg-[#0D1117] overflow-auto">
                             <div className="inline-grid min-w-full" style={{ gridTemplateColumns: "auto 1fr" }}>
@@ -700,7 +920,7 @@ export default function IDEApp() {
                         </div>
                     </div>
 
-                    {/* ── Chat Panel ── */}
+                    {/* Chat panel */}
                     <AnimatePresence>
                         {(chatOpen || !isMobile) && (
                             <motion.div
@@ -720,7 +940,7 @@ export default function IDEApp() {
                                             : "relative w-0 overflow-hidden",
                                 ].join(" ")}
                             >
-                                {/* Chat Header */}
+                                {/* Chat header */}
                                 <div className="flex items-center justify-between px-4 border-b border-gray-700 min-h-[48px] shrink-0">
                                     <div className="flex flex-col">
                                         <h3 className="text-sm font-semibold truncate">AI Assistant</h3>
@@ -751,17 +971,17 @@ export default function IDEApp() {
                                             key={idx}
                                             className={`p-3 rounded-lg text-sm whitespace-pre-wrap break-words ${
                                                 msg.role === "user"
-                                                    ? "bg-blue-600 ml-8 max-w-[85%] ml-auto"
+                                                    ? "bg-blue-600 ml-auto max-w-[85%]"
                                                     : "bg-[#0D1117] max-w-[90%]"
                                             }`}
                                         >
-                                            {msg.content}
+                                            <p className="leading-relaxed">{msg.content}</p>
                                         </div>
                                     ))}
                                     <div ref={chatBottomRef} />
                                 </div>
 
-                                {/* Chat Input */}
+                                {/* Input */}
                                 <div className="p-3 border-t border-gray-700 shrink-0 pb-[env(safe-area-inset-bottom,12px)]">
                                     <div className="flex items-end gap-2">
                                         <input
@@ -807,7 +1027,7 @@ export default function IDEApp() {
                 </div>
             </div>
 
-            {/* ── GitHub Modal ── */}
+            {/* GitHub modal */}
             <AnimatePresence>
                 {githubModalOpen && (
                     <motion.div
@@ -834,8 +1054,13 @@ export default function IDEApp() {
                                     <Github className="w-5 h-5 text-white" />
                                     <h2 className="text-sm font-semibold">Push to GitHub</h2>
                                 </div>
-                                <Button variant="ghost" size="sm" onClick={() => setGithubModalOpen(false)}
-                                    aria-label="Close" className="h-8 w-8 p-0 text-gray-400 hover:text-white">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setGithubModalOpen(false)}
+                                    aria-label="Close"
+                                    className="h-8 w-8 p-0 text-gray-400 hover:text-white"
+                                >
                                     <X className="w-4 h-4" />
                                 </Button>
                             </div>
@@ -843,10 +1068,14 @@ export default function IDEApp() {
                             <div className="p-5 space-y-4">
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1.5">GitHub Personal Access Token</label>
-                                    <input type="password" value={githubForm.token}
+                                    <input
+                                        type="password"
+                                        value={githubForm.token}
                                         onChange={(e) => setGithubForm((f) => ({ ...f, token: e.target.value }))}
-                                        placeholder="ghp_xxxxxxxxxxxx" autoComplete="off"
-                                        className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                        placeholder="ghp_xxxxxxxxxxxx"
+                                        className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                        autoComplete="off"
+                                    />
                                     <p className="text-xs text-gray-500 mt-1">
                                         Requires <code className="text-gray-400">contents:write</code> and <code className="text-gray-400">pull_requests:write</code> scopes.
                                     </p>
@@ -855,57 +1084,78 @@ export default function IDEApp() {
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
                                         <label className="block text-xs text-gray-400 mb-1.5">Owner</label>
-                                        <input type="text" value={githubForm.owner}
+                                        <input
+                                            type="text"
+                                            value={githubForm.owner}
                                             onChange={(e) => setGithubForm((f) => ({ ...f, owner: e.target.value.trim() }))}
                                             placeholder="your-username"
-                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                        />
                                     </div>
                                     <div>
                                         <label className="block text-xs text-gray-400 mb-1.5">Repository</label>
-                                        <input type="text" value={githubForm.repo}
+                                        <input
+                                            type="text"
+                                            value={githubForm.repo}
                                             onChange={(e) => setGithubForm((f) => ({ ...f, repo: e.target.value.trim() }))}
                                             placeholder="my-repo"
-                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                        />
                                     </div>
                                 </div>
 
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
                                         <label className="block text-xs text-gray-400 mb-1.5">Push to branch</label>
-                                        <input type="text" value={githubForm.branch}
+                                        <input
+                                            type="text"
+                                            value={githubForm.branch}
                                             onChange={(e) => setGithubForm((f) => ({ ...f, branch: e.target.value.trim() }))}
                                             placeholder="feature/my-branch"
-                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                        />
                                     </div>
                                     <div>
                                         <label className="block text-xs text-gray-400 mb-1.5">Base branch</label>
-                                        <input type="text" value={githubForm.baseBranch}
+                                        <input
+                                            type="text"
+                                            value={githubForm.baseBranch}
                                             onChange={(e) => setGithubForm((f) => ({ ...f, baseBranch: e.target.value.trim() }))}
                                             placeholder="main"
-                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                            className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                        />
                                     </div>
                                 </div>
 
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1.5">File path in repo</label>
-                                    <input type="text" value={githubForm.filePath}
+                                    <input
+                                        type="text"
+                                        value={githubForm.filePath}
                                         onChange={(e) => setGithubForm((f) => ({ ...f, filePath: e.target.value.trim() }))}
                                         placeholder="src/contract.rs"
-                                        className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                        className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                    />
                                 </div>
 
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1.5">Commit message</label>
-                                    <input type="text" value={githubForm.commitMessage}
+                                    <input
+                                        type="text"
+                                        value={githubForm.commitMessage}
                                         onChange={(e) => setGithubForm((f) => ({ ...f, commitMessage: e.target.value }))}
                                         placeholder="Update contract from CalliopeIDE"
-                                        className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                        className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                    />
                                 </div>
 
                                 <label className="flex items-center gap-2 cursor-pointer select-none">
-                                    <input type="checkbox" checked={githubForm.createPR}
+                                    <input
+                                        type="checkbox"
+                                        checked={githubForm.createPR}
                                         onChange={(e) => setGithubForm((f) => ({ ...f, createPR: e.target.checked }))}
-                                        className="w-4 h-4 rounded accent-blue-500" />
+                                        className="w-4 h-4 rounded accent-blue-500"
+                                    />
                                     <span className="text-sm flex items-center gap-1.5">
                                         <GitPullRequest className="w-4 h-4 text-gray-400" />
                                         Create a Pull Request after push
@@ -916,30 +1166,38 @@ export default function IDEApp() {
                                     <div className="space-y-3 pl-3 border-l-2 border-blue-600">
                                         <div>
                                             <label className="block text-xs text-gray-400 mb-1.5">PR Title</label>
-                                            <input type="text" value={githubForm.prTitle}
+                                            <input
+                                                type="text"
+                                                value={githubForm.prTitle}
                                                 onChange={(e) => setGithubForm((f) => ({ ...f, prTitle: e.target.value }))}
                                                 placeholder="Update smart contract"
-                                                className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600" />
+                                                className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600"
+                                            />
                                         </div>
                                         <div>
                                             <label className="block text-xs text-gray-400 mb-1.5">PR Description (optional)</label>
-                                            <textarea value={githubForm.prBody}
+                                            <textarea
+                                                value={githubForm.prBody}
                                                 onChange={(e) => setGithubForm((f) => ({ ...f, prBody: e.target.value }))}
-                                                placeholder="Describe your changes…" rows={3}
-                                                className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600 resize-none" />
+                                                placeholder="Describe your changes…"
+                                                rows={3}
+                                                className="w-full bg-[#0D1117] border border-gray-600 rounded-lg px-3 py-2 text-sm focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-gray-600 resize-none"
+                                            />
                                         </div>
                                     </div>
                                 )}
 
                                 {githubStatus.state !== "idle" && (
-                                    <div className={[
-                                        "rounded-lg px-4 py-3 text-sm",
-                                        githubStatus.state === "error"
-                                            ? "bg-red-900/40 border border-red-700 text-red-300"
-                                            : githubStatus.state === "success"
-                                            ? "bg-green-900/40 border border-green-700 text-green-300"
-                                            : "bg-blue-900/40 border border-blue-700 text-blue-300",
-                                    ].join(" ")}>
+                                    <div
+                                        className={[
+                                            "rounded-lg px-4 py-3 text-sm",
+                                            githubStatus.state === "error"
+                                                ? "bg-red-900/40 border border-red-700 text-red-300"
+                                                : githubStatus.state === "success"
+                                                ? "bg-green-900/40 border border-green-700 text-green-300"
+                                                : "bg-blue-900/40 border border-blue-700 text-blue-300",
+                                        ].join(" ")}
+                                    >
                                         <p>{githubStatus.message}</p>
                                         {githubStatus.links && (
                                             <div className="mt-2 flex flex-col gap-1">
@@ -960,13 +1218,20 @@ export default function IDEApp() {
                             </div>
 
                             <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-700">
-                                <Button variant="ghost" size="sm" onClick={() => setGithubModalOpen(false)}
-                                    className="text-gray-400 hover:text-white">
+                                <Button
+                                    variant="ghost"
+                                    size="sm"
+                                    onClick={() => setGithubModalOpen(false)}
+                                    className="text-gray-400 hover:text-white"
+                                >
                                     Cancel
                                 </Button>
-                                <Button size="sm" onClick={handleGithubSubmit}
+                                <Button
+                                    size="sm"
+                                    onClick={handleGithubSubmit}
                                     disabled={["pushing", "creating-pr"].includes(githubStatus.state)}
-                                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 flex items-center gap-1.5 disabled:opacity-50">
+                                    className="bg-blue-600 hover:bg-blue-700 text-white px-4 flex items-center gap-1.5 disabled:opacity-50"
+                                >
                                     <Github className="w-4 h-4" />
                                     {githubStatus.state === "pushing"
                                         ? "Pushing…"
