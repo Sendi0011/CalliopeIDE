@@ -475,6 +475,7 @@ export default function IDEApp() {
                             <Save className="w-4 h-4" />
                             <span className="text-xs">Save</span>
                         </Button>
+                        {/* Mobile icon-only */}
                         <Button
                             variant="ghost"
                             size="sm"
