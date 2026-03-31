@@ -1,28 +1,77 @@
 "use client"
 
 import { useState, useEffect, useRef } from "react"
+import { useRouter } from "next/router"
 import { motion, AnimatePresence } from "framer-motion"
-import { 
-    Menu, 
-    X, 
-    FolderOpen, 
-    Settings, 
-    Play, 
+import {
+    Menu,
+    X,
+    FolderOpen,
+    Settings,
+    Play,
     Save,
     MessageSquare,
     Send,
+    LogOut,
+    User,
     ChevronLeft,
-    ChevronRight,
     Zap,
     Rocket,
     Github,
-    GitPullRequest
+    GitPullRequest,
 } from "lucide-react"
 import { Button } from "@/components/ui/button"
 import { getPublicKey, signTransaction, isConnected } from "@stellar/freighter-api"
 import ContractInteraction from "@/components/ContractInteraction"
 
-// Sample code lines for the editor preview
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL || "http://localhost:5000"
+
+function getToken()   { return typeof window !== "undefined" ? localStorage.getItem("access_token")  : null }
+function getRefresh() { return typeof window !== "undefined" ? localStorage.getItem("refresh_token") : null }
+function clearTokens() {
+    localStorage.removeItem("access_token")
+    localStorage.removeItem("refresh_token")
+}
+
+async function refreshAccessToken() {
+    const refresh = getRefresh()
+    if (!refresh) return null
+    try {
+        const res = await fetch(`${BACKEND_URL}/api/auth/refresh`, {
+            method: "POST",
+            headers: { "Content-Type": "application/json" },
+            body: JSON.stringify({ refresh_token: refresh }),
+        })
+        if (!res.ok) return null
+        const data = await res.json()
+        if (data.access_token) {
+            localStorage.setItem("access_token", data.access_token)
+            return data.access_token
+        }
+    } catch { /* network error */ }
+    return null
+}
+
+async function fetchCurrentUser(token) {
+    try {
+        let res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+            headers: { Authorization: `Bearer ${token}` },
+        })
+        if (res.status === 401) {
+            const newToken = await refreshAccessToken()
+            if (!newToken) return null
+            res = await fetch(`${BACKEND_URL}/api/auth/me`, {
+                headers: { Authorization: `Bearer ${newToken}` },
+            })
+        }
+        if (!res.ok) return null
+        const data = await res.json()
+        return data.user ?? null
+    } catch {
+        return null
+    }
+}
+
 const CODE_LINES = [
     { num: 1,  code: "" },
     { num: 2,  code: "use soroban_sdk::{contract, contractimpl, Env, Symbol};" },
@@ -43,16 +92,21 @@ const CODE_LINES = [
 ]
 
 export default function IDEApp() {
-    const [sidebarOpen, setSidebarOpen] = useState(true)
-    const [chatOpen, setChatOpen] = useState(true)
-    const [message, setMessage] = useState("")
-    const [isMobile, setIsMobile] = useState(false)
-    const [isDeploying, setIsDeploying] = useState(false)
-    const [contractId, setContractId] = useState(null)
-    const [sidebarTab, setSidebarTab] = useState("explorer")
+    const router = useRouter()
+
+    const [user, setUser]               = useState(null)
+    const [authLoading, setAuthLoading] = useState(true)
+
+    const [sidebarOpen, setSidebarOpen]   = useState(true)
+    const [chatOpen, setChatOpen]         = useState(true)
+    const [message, setMessage]           = useState("")
+    const [isMobile, setIsMobile]         = useState(false)
+    const [userMenuOpen, setUserMenuOpen] = useState(false)
+    const [isDeploying, setIsDeploying]   = useState(false)
+    const [contractId, setContractId]     = useState(null)
+    const [sidebarTab, setSidebarTab]     = useState("explorer")
     const chatMessagesRef = useRef(null)
 
-    // ── GitHub Push / PR state ────────────────────────────────────────────
     const [githubModalOpen, setGithubModalOpen] = useState(false)
     const [githubForm, setGithubForm] = useState({
         token: "",
@@ -67,6 +121,56 @@ export default function IDEApp() {
         prBody: "",
     })
     const [githubStatus, setGithubStatus] = useState({ state: "idle", message: "", links: null })
+
+    useEffect(() => {
+        async function init() {
+            const token = getToken()
+            if (!token) {
+                router.replace("/login")
+                return
+            }
+            const userData = await fetchCurrentUser(token)
+            if (!userData) {
+                clearTokens()
+                router.replace("/login")
+                return
+            }
+            setUser(userData)
+            setAuthLoading(false)
+        }
+        init()
+    }, [router])
+
+    async function logout() {
+        const token = getToken()
+        if (token) {
+            try {
+                await fetch(`${BACKEND_URL}/api/auth/logout`, {
+                    method: "POST",
+                    headers: { Authorization: `Bearer ${token}` },
+                })
+            } catch { /* best-effort */ }
+        }
+        clearTokens()
+        router.push("/login")
+    }
+
+    useEffect(() => {
+        const checkMobile = () => {
+            const mobile = window.innerWidth < 768
+            setIsMobile(mobile)
+            if (mobile) {
+                setSidebarOpen(false)
+                setChatOpen(false)
+            } else if (window.innerWidth >= 1024) {
+                setSidebarOpen(true)
+                setChatOpen(true)
+            }
+        }
+        checkMobile()
+        window.addEventListener("resize", checkMobile)
+        return () => window.removeEventListener("resize", checkMobile)
+    }, [])
 
     const handleGithubSubmit = async () => {
         setGithubStatus({ state: "pushing", message: "Pushing to GitHub…", links: null })
@@ -132,106 +236,91 @@ export default function IDEApp() {
         }
     }
 
-    // Detect mobile and auto-collapse panels accordingly
-    useEffect(() => {
-        const checkMobile = () => {
-            const mobile = window.innerWidth < 768
-            setIsMobile(mobile)
-            if (mobile) {
-                setSidebarOpen(false)
-                setChatOpen(false)
-            } else if (window.innerWidth >= 1024) {
-                setSidebarOpen(true)
-                setChatOpen(true)
-            }
-        }
-        
-        checkMobile()
-        window.addEventListener("resize", checkMobile)
-        return () => window.removeEventListener("resize", checkMobile)
-    }, [])
-
     const handleDeploy = async () => {
         try {
-            setIsDeploying(true);
-            const connected = await isConnected();
+            setIsDeploying(true)
+            const connected = await isConnected()
             if (!connected) {
-                alert("Please install and unlock Freighter extension.");
-                return;
+                alert("Please install and unlock Freighter extension.")
+                return
             }
 
-            const publicKey = await getPublicKey();
-            if (!publicKey) return;
+            const publicKey = await getPublicKey()
+            if (!publicKey) return
 
-            // 1. Prepare Upload
             const uploadPrep = await fetch("/api/soroban/prepare-upload", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
-                    session_id: 1, // Mock session ID for now
-                    wasm_path: "target/wasm32-unknown-unknown/release/contract.wasm", 
-                    public_key: publicKey
-                })
-            }).then(r => r.json());
+                    session_id: 1,
+                    wasm_path: "target/wasm32-unknown-unknown/release/contract.wasm",
+                    public_key: publicKey,
+                }),
+            }).then(r => r.json())
 
-            if (!uploadPrep.success) throw new Error(uploadPrep.error);
+            if (!uploadPrep.success) throw new Error(uploadPrep.error)
 
-            // 2. Sign Upload
-            const signedUpload = await signTransaction(uploadPrep.unsigned_xdr, { network: "TESTNET" });
-            
-            // 3. Submit Upload
+            const signedUpload = await signTransaction(uploadPrep.unsigned_xdr, { network: "TESTNET" })
+
             const uploadResult = await fetch("/api/soroban/submit-tx", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ signed_xdr: signedUpload })
-            }).then(r => r.json());
+                body: JSON.stringify({ signed_xdr: signedUpload }),
+            }).then(r => r.json())
 
-            if (!uploadResult.success) throw new Error(uploadResult.error);
-            const wasmHash = uploadResult.wasm_hash;
+            if (!uploadResult.success) throw new Error(uploadResult.error)
+            const wasmHash = uploadResult.wasm_hash
 
-            // 4. Prepare Create
             const createPrep = await fetch("/api/soroban/prepare-create", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
                 body: JSON.stringify({
                     session_id: 1,
                     wasm_hash: wasmHash,
-                    public_key: publicKey
-                })
-            }).then(r => r.json());
+                    public_key: publicKey,
+                }),
+            }).then(r => r.json())
 
-            if (!createPrep.success) throw new Error(createPrep.error);
+            if (!createPrep.success) throw new Error(createPrep.error)
 
-            // 5. Sign Create
-            const signedCreate = await signTransaction(createPrep.unsigned_xdr, { network: "TESTNET" });
+            const signedCreate = await signTransaction(createPrep.unsigned_xdr, { network: "TESTNET" })
 
-            // 6. Submit Create
             const createResult = await fetch("/api/soroban/submit-tx", {
                 method: "POST",
                 headers: { "Content-Type": "application/json" },
-                body: JSON.stringify({ signed_xdr: signedCreate })
-            }).then(r => r.json());
+                body: JSON.stringify({ signed_xdr: signedCreate }),
+            }).then(r => r.json())
 
-            if (!createResult.success) throw new Error(createResult.error);
-            
-            setContractId(createResult.contract_id);
-            alert(`Contract deployed successfully! ID: ${createResult.contract_id}`);
+            if (!createResult.success) throw new Error(createResult.error)
 
+            setContractId(createResult.contract_id)
+            alert(`Contract deployed successfully! ID: ${createResult.contract_id}`)
         } catch (error) {
-            console.error("Deployment failed:", error);
-            alert(`Deployment failed: ${error.message}`);
+            console.error("Deployment failed:", error)
+            alert(`Deployment failed: ${error.message}`)
         } finally {
-            setIsDeploying(false);
+            setIsDeploying(false)
         }
-    };
+    }
+
+    if (authLoading) {
+        return (
+            <div className="flex h-screen items-center justify-center bg-[#0D1117]">
+                <div className="flex flex-col items-center gap-4">
+                    <div className="w-8 h-8 border-2 border-gray-600 border-t-blue-500 rounded-full animate-spin" />
+                    <span className="text-gray-400 text-sm">Authenticating…</span>
+                </div>
+            </div>
+        )
+    }
 
     const sidebarVariants = {
-        open:   { x: 0,      opacity: 1 },
+        open:   { x: 0,       opacity: 1 },
         closed: { x: "-100%", opacity: 0 },
     }
 
     const chatVariants = {
-        open:   { x: 0,     opacity: 1 },
+        open:   { x: 0,      opacity: 1 },
         closed: { x: "100%", opacity: 0 },
     }
 
@@ -242,7 +331,6 @@ export default function IDEApp() {
 
     return (
         <div className="flex h-[100dvh] bg-[#0D1117] text-white overflow-hidden">
-            {/* ── Mobile Backdrop ── */}
             <AnimatePresence>
                 {isMobile && (sidebarOpen || chatOpen) && (
                     <motion.div
@@ -257,7 +345,6 @@ export default function IDEApp() {
                 )}
             </AnimatePresence>
 
-            {/* ── Sidebar ── */}
             <AnimatePresence>
                 {(sidebarOpen || !isMobile) && (
                     <motion.aside
@@ -277,7 +364,6 @@ export default function IDEApp() {
                                     : "relative w-0 overflow-hidden",
                         ].join(" ")}
                     >
-                        {/* Sidebar Header */}
                         <div className="flex items-center justify-between px-4 py-3 border-b border-gray-700 min-h-[48px]">
                             <div className="flex gap-1">
                                 <button
@@ -314,7 +400,6 @@ export default function IDEApp() {
                             </Button>
                         </div>
 
-                        {/* Sidebar Body */}
                         <div className="flex-1 overflow-y-auto">
                             {sidebarTab === "explorer" && (
                                 <div className="p-3 space-y-0.5">
@@ -347,7 +432,6 @@ export default function IDEApp() {
                             )}
                         </div>
 
-                        {/* Sidebar Footer */}
                         <div className="p-3 border-t border-gray-700">
                             <Button
                                 variant="ghost"
@@ -362,11 +446,8 @@ export default function IDEApp() {
                 )}
             </AnimatePresence>
 
-            {/* ── Main Content Area ── */}
             <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
-                {/* Top Toolbar */}
                 <div className="h-12 bg-[#161B22] border-b border-gray-700 flex items-center px-3 gap-2 shrink-0">
-                    {/* Left: sidebar toggle + filename */}
                     <div className="flex items-center gap-2 min-w-0">
                         <Button
                             variant="ghost"
@@ -385,7 +466,6 @@ export default function IDEApp() {
 
                     <div className="flex-1" />
 
-                    {/* Right: action buttons */}
                     <div className="flex items-center gap-1 shrink-0">
                         <Button
                             variant="ghost"
@@ -395,6 +475,7 @@ export default function IDEApp() {
                             <Save className="w-4 h-4" />
                             <span className="text-xs">Save</span>
                         </Button>
+                        {/* Mobile icon-only */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -403,7 +484,6 @@ export default function IDEApp() {
                             <Play className="w-4 h-4" />
                             <span className="text-xs">Run</span>
                         </Button>
-                        {/* Mobile-only icon-only Save / Run */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -420,7 +500,6 @@ export default function IDEApp() {
                         >
                             <Play className="w-4 h-4" />
                         </Button>
-                        {/* Desktop: Push + PR */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -431,7 +510,6 @@ export default function IDEApp() {
                             <Github className="w-4 h-4" />
                             <span className="text-xs">Push</span>
                         </Button>
-                        {/* Mobile icon-only */}
                         <Button
                             variant="ghost"
                             size="sm"
@@ -460,17 +538,69 @@ export default function IDEApp() {
                         >
                             <MessageSquare className="w-4 h-4" />
                         </Button>
+
+                        <div className="relative">
+                            <button
+                                onClick={() => setUserMenuOpen(o => !o)}
+                                className="flex items-center gap-2 ml-2 focus:outline-none"
+                                aria-label="User menu"
+                            >
+                                {user?.avatar_url ? (
+                                    <img
+                                        src={user.avatar_url}
+                                        alt={user.username}
+                                        className="w-7 h-7 rounded-full border border-gray-600 object-cover"
+                                    />
+                                ) : (
+                                    <div className="w-7 h-7 rounded-full bg-blue-600 flex items-center justify-center text-xs font-semibold">
+                                        {user?.username?.[0]?.toUpperCase() ?? "?"}
+                                    </div>
+                                )}
+                            </button>
+
+                            <AnimatePresence>
+                                {userMenuOpen && (
+                                    <motion.div
+                                        initial={{ opacity: 0, y: -6 }}
+                                        animate={{ opacity: 1, y: 0 }}
+                                        exit={{ opacity: 0, y: -6 }}
+                                        transition={{ duration: 0.15 }}
+                                        className="absolute right-0 top-10 w-52 bg-[#1e2a38] border border-gray-700 rounded-lg shadow-xl z-50 overflow-hidden"
+                                    >
+                                        <div className="px-4 py-3 border-b border-gray-700">
+                                            <p className="text-sm font-medium truncate">{user?.full_name || user?.username}</p>
+                                            <p className="text-xs text-gray-400 truncate">{user?.email}</p>
+                                            {user?.oauth_provider && (
+                                                <span className="mt-1 inline-block text-[10px] px-1.5 py-0.5 rounded bg-gray-700 text-gray-300 capitalize">
+                                                    via {user.oauth_provider}
+                                                </span>
+                                            )}
+                                        </div>
+
+                                        <button
+                                            className="w-full flex items-center gap-2 px-4 py-2 text-sm text-gray-300 hover:bg-gray-700 transition-colors"
+                                            onClick={() => { setUserMenuOpen(false) }}
+                                        >
+                                            <User className="w-4 h-4" /> Profile
+                                        </button>
+
+                                        <button
+                                            className="w-full flex items-center gap-2 px-4 py-2 text-sm text-red-400 hover:bg-gray-700 transition-colors"
+                                            onClick={() => { setUserMenuOpen(false); logout() }}
+                                        >
+                                            <LogOut className="w-4 h-4" /> Sign out
+                                        </button>
+                                    </motion.div>
+                                )}
+                            </AnimatePresence>
+                        </div>
                     </div>
                 </div>
 
-                {/* Editor + Chat Container */}
                 <div className="flex-1 flex overflow-hidden min-h-0">
-                    {/* ── Code Editor ── */}
                     <div className="flex-1 flex flex-col min-w-0 overflow-hidden">
                         <div className="flex-1 bg-[#0D1117] overflow-auto">
-                            {/* Line numbers + code in a side-by-side grid so numbers never clip */}
                             <div className="inline-grid min-w-full" style={{ gridTemplateColumns: "auto 1fr" }}>
-                                {/* Gutter (line numbers) */}
                                 <div
                                     className="select-none text-right pr-4 pl-4 py-4 text-gray-500 font-mono text-sm leading-6 border-r border-gray-800 bg-[#0D1117] sticky left-0"
                                     aria-hidden="true"
@@ -479,7 +609,6 @@ export default function IDEApp() {
                                         <div key={num} className="leading-6">{num}</div>
                                     ))}
                                 </div>
-                                {/* Code content */}
                                 <div className="py-4 pl-4 pr-8 font-mono text-sm leading-6 text-gray-200 whitespace-pre overflow-x-auto">
                                     {CODE_LINES.map(({ num, code }) => (
                                         <div key={num} className="leading-6">{code || "\u00A0"}</div>
@@ -489,7 +618,6 @@ export default function IDEApp() {
                         </div>
                     </div>
 
-                    {/* ── Chat Panel ── */}
                     <AnimatePresence>
                         {(chatOpen || !isMobile) && (
                             <motion.div
@@ -509,7 +637,6 @@ export default function IDEApp() {
                                             : "relative w-0 overflow-hidden",
                                 ].join(" ")}
                             >
-                                {/* Chat Header */}
                                 <div className="flex items-center justify-between px-4 border-b border-gray-700 min-h-[48px] shrink-0">
                                     <h3 className="text-sm font-semibold truncate">AI Assistant</h3>
                                     <Button
@@ -523,14 +650,13 @@ export default function IDEApp() {
                                     </Button>
                                 </div>
 
-                                {/* Chat Messages */}
                                 <div
                                     ref={chatMessagesRef}
                                     className="flex-1 overflow-y-auto p-4 space-y-3 min-h-0"
                                 >
                                     <div className="bg-[#0D1117] p-3 rounded-lg max-w-[90%]">
                                         <p className="text-sm leading-relaxed">
-                                            Hello! I&apos;m your AI assistant for Soroban smart contract development. How can I help you today?
+                                            Hello{user ? `, ${user.full_name || user.username}` : ""}! I&apos;m your AI assistant for Soroban smart contract development. How can I help you today?
                                         </p>
                                     </div>
 
@@ -545,7 +671,6 @@ export default function IDEApp() {
                                     </div>
                                 </div>
 
-                                {/* Chat Input — pinned to bottom, safe on mobile keyboards */}
                                 <div className="p-3 border-t border-gray-700 shrink-0 pb-[env(safe-area-inset-bottom,12px)]">
                                     <div className="flex items-end gap-2">
                                         <input
@@ -580,7 +705,6 @@ export default function IDEApp() {
                 </div>
             </div>
 
-            {/* ── GitHub Push / PR Modal ── */}
             <AnimatePresence>
                 {githubModalOpen && (
                     <motion.div
@@ -602,7 +726,6 @@ export default function IDEApp() {
                             className="bg-[#161B22] border border-gray-700 rounded-xl w-full max-w-md shadow-2xl overflow-y-auto max-h-[90dvh]"
                             onClick={(e) => e.stopPropagation()}
                         >
-                            {/* Modal Header */}
                             <div className="flex items-center justify-between px-5 py-4 border-b border-gray-700">
                                 <div className="flex items-center gap-2">
                                     <Github className="w-5 h-5 text-white" />
@@ -619,9 +742,7 @@ export default function IDEApp() {
                                 </Button>
                             </div>
 
-                            {/* Modal Body */}
                             <div className="p-5 space-y-4">
-                                {/* Token */}
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1.5">GitHub Personal Access Token</label>
                                     <input
@@ -637,7 +758,6 @@ export default function IDEApp() {
                                     </p>
                                 </div>
 
-                                {/* Owner / Repo */}
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
                                         <label className="block text-xs text-gray-400 mb-1.5">Owner</label>
@@ -661,7 +781,6 @@ export default function IDEApp() {
                                     </div>
                                 </div>
 
-                                {/* Branch / Base */}
                                 <div className="grid grid-cols-2 gap-3">
                                     <div>
                                         <label className="block text-xs text-gray-400 mb-1.5">Push to branch</label>
@@ -685,7 +804,6 @@ export default function IDEApp() {
                                     </div>
                                 </div>
 
-                                {/* File path */}
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1.5">File path in repo</label>
                                     <input
@@ -697,7 +815,6 @@ export default function IDEApp() {
                                     />
                                 </div>
 
-                                {/* Commit message */}
                                 <div>
                                     <label className="block text-xs text-gray-400 mb-1.5">Commit message</label>
                                     <input
@@ -709,7 +826,6 @@ export default function IDEApp() {
                                     />
                                 </div>
 
-                                {/* Create PR checkbox */}
                                 <label className="flex items-center gap-2 cursor-pointer select-none">
                                     <input
                                         type="checkbox"
@@ -723,7 +839,6 @@ export default function IDEApp() {
                                     </span>
                                 </label>
 
-                                {/* PR fields */}
                                 {githubForm.createPR && (
                                     <div className="space-y-3 pl-3 border-l-2 border-blue-600">
                                         <div>
@@ -749,7 +864,6 @@ export default function IDEApp() {
                                     </div>
                                 )}
 
-                                {/* Status */}
                                 {githubStatus.state !== "idle" && (
                                     <div
                                         className={[
@@ -780,7 +894,6 @@ export default function IDEApp() {
                                 )}
                             </div>
 
-                            {/* Modal Footer */}
                             <div className="flex items-center justify-end gap-2 px-5 py-4 border-t border-gray-700">
                                 <Button
                                     variant="ghost"
