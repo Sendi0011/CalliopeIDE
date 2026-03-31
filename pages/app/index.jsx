@@ -66,6 +66,51 @@ export default function IDEApp() {
     const [sidebarOpen, setSidebarOpen] = useState(true)
     const [chatOpen, setChatOpen] = useState(true)
     const [isMobile, setIsMobile] = useState(false)
+    const [isDeploying, setIsDeploying] = useState(false)
+    const [contractId, setContractId] = useState(null)
+    const [sidebarTab, setSidebarTab] = useState("explorer")
+    const chatMessagesRef = useRef(null)
+
+    // ── GitHub Push / PR state ────────────────────────────────────────────
+    const [githubModalOpen, setGithubModalOpen] = useState(false)
+    const [githubForm, setGithubForm] = useState({
+        token: "",
+        owner: "",
+        repo: "",
+        branch: "feature/calliope-changes",
+        baseBranch: "main",
+        filePath: "contract.rs",
+        commitMessage: "Update contract from CalliopeIDE",
+        createPR: false,
+        prTitle: "Update smart contract",
+        prBody: "",
+    })
+    const [githubStatus, setGithubStatus] = useState({ state: "idle", message: "", links: null })
+
+    const handleGithubSubmit = async () => {
+        setGithubStatus({ state: "pushing", message: "Pushing to GitHub…", links: null })
+        const code = CODE_LINES.map((l) => l.code).join("\n")
+        try {
+            const pushRes = await fetch("/api/github", {
+                method: "POST",
+                headers: { "Content-Type": "application/json" },
+                body: JSON.stringify({
+                    action: "push",
+                    token: githubForm.token,
+                    owner: githubForm.owner,
+                    repo: githubForm.repo,
+                    branch: githubForm.branch,
+                    baseBranch: githubForm.baseBranch,
+                    filePath: githubForm.filePath,
+                    content: code,
+                    commitMessage: githubForm.commitMessage,
+                }),
+            })
+            const pushData = await pushRes.json()
+            if (!pushRes.ok) {
+                setGithubStatus({ state: "error", message: pushData.error, links: null })
+                return
+            }
 
     // ── Editor / project state ─────────────────────────────────────────────────
     const [message, setMessage] = useState("")
@@ -655,7 +700,7 @@ export default function IDEApp() {
                         </div>
                     </div>
 
-                    {/* Chat Panel */}
+                    {/* ── Chat Panel ── */}
                     <AnimatePresence>
                         {(chatOpen || !isMobile) && (
                             <motion.div
