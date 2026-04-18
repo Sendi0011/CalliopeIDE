@@ -3,6 +3,8 @@
 import { useState, useEffect, useCallback, useRef } from "react"
 import { useRouter } from "next/router"
 import { motion, AnimatePresence } from "framer-motion"
+import ReactMarkdown from "react-markdown"
+
 import {
     Menu,
     X,
@@ -626,7 +628,7 @@ export default function IDEApp() {
                     try {
                         const event = JSON.parse(line.slice(6))
                         if (event.type === "output") {
-                            assistantBuffer += event.data + "\n"
+                            assistantBuffer += event.data
                             // Update the last assistant message in place
                             setChatHistory((prev) => {
                                 const updated = [...prev]
@@ -1053,13 +1055,19 @@ export default function IDEApp() {
                                     {chatHistory.map((msg, idx) => (
                                         <div
                                             key={idx}
-                                            className={`p-3 rounded-lg text-sm whitespace-pre-wrap break-words ${
+                                            className={`p-3 rounded-lg text-sm break-words ${
                                                 msg.role === "user"
-                                                    ? "bg-blue-600 ml-auto max-w-[85%]"
-                                                    : "bg-[#0D1117] max-w-[90%]"
+                                                    ? "bg-blue-600 ml-auto max-w-[85%] whitespace-pre-wrap"
+                                                    : "bg-[#0D1117] max-w-full text-gray-200"
                                             }`}
                                         >
-                                            <p className="leading-relaxed">{msg.content}</p>
+                                            {msg.role === "user" ? (
+                                                <p className="leading-relaxed">{msg.content}</p>
+                                            ) : (
+                                                <div className="react-markdown-wrapper space-y-2">
+                                                    <ReactMarkdown>{msg.content}</ReactMarkdown>
+                                                </div>
+                                            )}
                                         </div>
                                     ))}
                                     <div ref={chatBottomRef} />
