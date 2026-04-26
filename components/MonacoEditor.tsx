@@ -87,7 +87,7 @@ export default function MonacoEditor({
     // Propagate Ctrl/Cmd+S to the browser so the parent's keyboard listener
     // (or the native Save shortcut) can pick it up.
     editor.addCommand(
-      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      // eslint-disable-next-line
       ((window as any).monaco?.KeyMod?.CtrlCmd ?? 0) | ((window as any).monaco?.KeyCode?.KeyS ?? 0),
       () => {
         window.dispatchEvent(new KeyboardEvent("keydown", { key: "s", ctrlKey: true, bubbles: true }))

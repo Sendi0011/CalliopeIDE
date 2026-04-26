@@ -17,7 +17,7 @@ import "@testing-library/jest-dom"
 // jsdom. We replace it with a lightweight textarea that exercises the same
 // props our wrapper passes through.
 jest.mock("@monaco-editor/react", () => {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  // eslint-disable-next-line
   const FakeEditor = ({ value, onChange, onMount, loading }: any) => {
     // Call onMount with a minimal mock editor object so our ref logic works.
     React.useEffect(() => {
