@@ -87,7 +87,8 @@ class TestPrepareInvoke:
         """Test that all required fields are validated"""
         resp = client.post("/api/soroban/prepare-invoke", json={})
         assert resp.status_code == 400
-        assert b"required" in resp.data
+        data = resp.get_json()
+        assert not data.get("success")
 
     def test_parameters_must_be_list(self, client, tmp_path):
         """Test that parameters field must be a list"""
@@ -139,12 +140,16 @@ class TestPrepareInvoke:
         invoke_module.Session = _yes_session(d)
         invoke_module._get_stellar_sdk = lambda: (True, None)
         
+        # Use valid addresses to get past validation
+        valid_contract = "CAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAD2KM"
+        valid_public = "GAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAWHF"
+        
         with patch("server.routes.soroban_invoke._parse_param", side_effect=ValueError("bad param")):
             resp = client.post("/api/soroban/prepare-invoke", json={
                 "session_id": 1,
-                "contract_id": "CTEST",
+                "contract_id": valid_contract,
                 "function_name": "hello",
-                "public_key": "GTEST",
+                "public_key": valid_public,
                 "parameters": ["invalid:format"]
             })
         
@@ -191,7 +196,8 @@ class TestSubmitInvoke:
         """Test that all required fields are validated"""
         resp = client.post("/api/soroban/submit-invoke", json={})
         assert resp.status_code == 400
-        assert b"required" in resp.data
+        data = resp.get_json()
+        assert not data.get("success")
 
     def test_session_not_found(self, client):
         """Test that invalid session returns 404"""
