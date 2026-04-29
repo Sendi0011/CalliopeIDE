@@ -62,6 +62,9 @@ def deploy_contract(current_user):
     """
     Deploy a compiled Soroban WASM contract to Stellar testnet.
 
+    DEPRECATED: This endpoint requires server-side key management which is insecure.
+    Use /api/soroban/prepare-upload + /api/soroban/prepare-create + /api/soroban/submit-tx instead.
+
     Request JSON:
         session_id      (int)   — active session ID
         wasm_path       (str)   — relative path to .wasm file inside instance dir
