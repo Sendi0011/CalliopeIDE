@@ -44,11 +44,15 @@ _rate_limit_store = {}
 
 def _get_client_ip() -> str:
     """Extract client IP address from request, considering proxies."""
-    if request.headers.get('X-Forwarded-For'):
-        return request.headers.get('X-Forwarded-For').split(',')[0].strip()
-    elif request.headers.get('X-Real-IP'):
-        return request.headers.get('X-Real-IP')
-    return request.remote_addr or 'unknown'
+    try:
+        if request.headers.get('X-Forwarded-For'):
+            return request.headers.get('X-Forwarded-For').split(',')[0].strip()
+        elif request.headers.get('X-Real-IP'):
+            return request.headers.get('X-Real-IP')
+        return request.remote_addr or 'unknown'
+    except RuntimeError:
+        # Outside request context (e.g., in tests)
+        return 'test-ip'
 
 
 def _get_rate_limit_key(prefix: str, identifier: str, window: str) -> str:
